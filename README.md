@@ -27,6 +27,51 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 - [http://127.0.0.1:8080](http://127.0.0.1:8080)
 
+### Windows 启动（PowerShell）
+
+```powershell
+cd $HOME\Desktop
+git clone https://github.com/jonhncatt/offciatool.git
+cd .\offciatool
+git checkout codex/office-agent
+
+py -3.11 -m venv .venv
+# 如果激活报策略限制，先执行：Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+$env:OPENAI_API_KEY = "<YOUR_API_KEY>"
+$env:OFFCIATOOL_OPENAI_BASE_URL = "https://<YOUR_COMPANY_API_BASE>/v1"
+$env:OFFCIATOOL_CA_CERT_PATH = "C:\path\to\KIOXIAInternalRootCA.cer"
+$env:OFFCIATOOL_USE_RESPONSES_API = "false"
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+### Windows 启动（CMD）
+
+```bat
+cd %USERPROFILE%\Desktop
+git clone https://github.com/jonhncatt/offciatool.git
+cd offciatool
+git checkout codex/office-agent
+
+py -3.11 -m venv .venv
+call .venv\Scripts\activate.bat
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+set OPENAI_API_KEY=<YOUR_API_KEY>
+set OFFCIATOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
+set OFFCIATOOL_CA_CERT_PATH=C:\path\to\KIOXIAInternalRootCA.cer
+set OFFCIATOOL_USE_RESPONSES_API=false
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
 ## 2. 功能说明
 
 ### 图片/文档
