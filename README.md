@@ -138,6 +138,8 @@ cd $HOME\Desktop\officetool
 - 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFICETOOL_OPENAI_BASE_URL`
 - 如需公司 CA 证书，请设置：`OFFICETOOL_CA_CERT_PATH`（等价 `curl --cacert`）
 - 如需强制走 Chat Completions/tool calling 语义，请设置：`OFFICETOOL_USE_RESPONSES_API=false`
+- 摘要模型变量为 `OFFICETOOL_SUMMARY_MODEL`（兼容别名 `OFFICETOOL_SUMMARY_MODE`）
+- 温度默认不强制传参；如需指定可设置 `OFFICETOOL_TEMPERATURE`（例如 `0` 或 `1`）
 - 如网页抓取报 `CERTIFICATE_VERIFY_FAILED`（如 basic constraints not marked critical），请设置：`OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`
 
 ## 3. 目录结构

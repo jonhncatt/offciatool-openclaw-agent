@@ -289,9 +289,10 @@ class OfficeAgent:
             "model": model,
             "api_key": os.environ.get("OPENAI_API_KEY"),
             "max_tokens": max_output_tokens,
-            "temperature": 0,
             "use_responses_api": selected_use_responses,
         }
+        if self.config.openai_temperature is not None:
+            kwargs["temperature"] = self.config.openai_temperature
         if self.config.openai_base_url:
             kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
         if self.config.openai_ca_cert_path:

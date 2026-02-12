@@ -90,6 +90,7 @@ class AppConfig:
     web_ca_cert_path: str | None
     openai_base_url: str | None
     openai_ca_cert_path: str | None
+    openai_temperature: float | None
     openai_use_responses_api: bool
     default_model: str
     summary_model: str
@@ -153,6 +154,15 @@ def load_config() -> AppConfig:
     openai_ca_cert_path = (
         _env("OFFICETOOL_CA_CERT_PATH", "OFFCIATOOL_CA_CERT_PATH", "SSL_CERT_FILE", default="") or ""
     ).strip() or None
+    openai_temperature_raw = (
+        _env("OFFICETOOL_TEMPERATURE", "OFFCIATOOL_TEMPERATURE", default="") or ""
+    ).strip()
+    openai_temperature: float | None = None
+    if openai_temperature_raw:
+        try:
+            openai_temperature = float(openai_temperature_raw)
+        except Exception:
+            openai_temperature = None
 
     use_responses_raw = (
         _env("OFFICETOOL_USE_RESPONSES_API", "OFFCIATOOL_USE_RESPONSES_API", default="false") or "false"
@@ -220,9 +230,19 @@ def load_config() -> AppConfig:
         web_ca_cert_path=web_ca_cert_path,
         openai_base_url=openai_base_url,
         openai_ca_cert_path=openai_ca_cert_path,
+        openai_temperature=openai_temperature,
         openai_use_responses_api=openai_use_responses_api,
         default_model=_env("OFFICETOOL_DEFAULT_MODEL", "OFFCIATOOL_DEFAULT_MODEL", default="gpt-4.1") or "gpt-4.1",
-        summary_model=_env("OFFICETOOL_SUMMARY_MODEL", "OFFCIATOOL_SUMMARY_MODEL", default="gpt-4.1-mini") or "gpt-4.1-mini",
+        summary_model=(
+            _env(
+                "OFFICETOOL_SUMMARY_MODEL",
+                "OFFICETOOL_SUMMARY_MODE",
+                "OFFCIATOOL_SUMMARY_MODEL",
+                "OFFCIATOOL_SUMMARY_MODE",
+                default="gpt-4.1-mini",
+            )
+            or "gpt-4.1-mini"
+        ),
         system_prompt=_env("OFFICETOOL_SYSTEM_PROMPT", "OFFCIATOOL_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
         or DEFAULT_SYSTEM_PROMPT,
         summary_trigger_turns=int(
