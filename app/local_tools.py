@@ -233,12 +233,13 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "read_text_file",
-                "description": "Read a UTF-8 text file in workspace.",
+                "description": "Read a UTF-8 text file in workspace. Supports chunked reads with start_char.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "path": {"type": "string"},
-                        "max_chars": {"type": "integer", "minimum": 128, "maximum": 50000, "default": 10000},
+                        "start_char": {"type": "integer", "minimum": 0, "default": 0},
+                        "max_chars": {"type": "integer", "minimum": 128, "maximum": 1000000, "default": 200000},
                     },
                     "required": ["path"],
                     "additionalProperties": False,
@@ -301,7 +302,7 @@ class LocalToolExecutor:
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "description": "http/https URL"},
-                        "max_chars": {"type": "integer", "minimum": 512, "maximum": 120000, "default": 24000},
+                        "max_chars": {"type": "integer", "minimum": 512, "maximum": 500000, "default": 120000},
                         "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 30, "default": 12},
                     },
                     "required": ["url"],
@@ -399,7 +400,7 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"list_directory failed: {exc}"}
 
-    def read_text_file(self, path: str, max_chars: int = 10000) -> dict[str, Any]:
+    def read_text_file(self, path: str, start_char: int = 0, max_chars: int = 200000) -> dict[str, Any]:
         try:
             real_path = _resolve_workspace_path(self.config, path)
             if not real_path.exists():
@@ -409,15 +410,23 @@ class LocalToolExecutor:
 
             full_text = real_path.read_text(encoding="utf-8", errors="ignore")
             total_length = len(full_text)
-            text = full_text[:max_chars]
-            truncated = total_length > len(text)
+            limit = max(128, min(1_000_000, int(max_chars)))
+            start = max(0, int(start_char))
+            if start > total_length:
+                start = total_length
+            end = min(total_length, start + limit)
+            text = full_text[start:end]
+            truncated = end < total_length
             return {
                 "ok": True,
                 "path": str(real_path),
                 "content": text,
                 "length": len(text),
+                "start_char": start,
+                "end_char": end,
                 "total_length": total_length,
                 "truncated": truncated,
+                "has_more": truncated,
             }
         except Exception as exc:
             return {"ok": False, "error": f"read_text_file failed: {exc}"}
@@ -536,7 +545,7 @@ class LocalToolExecutor:
                 return True
         return False
 
-    def fetch_web(self, url: str, max_chars: int = 24000, timeout_sec: int = 12) -> dict[str, Any]:
+    def fetch_web(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             return {"ok": False, "error": "Only http/https URLs are supported"}
@@ -556,7 +565,7 @@ class LocalToolExecutor:
             }
 
         timeout_val = max(3, min(30, timeout_sec))
-        limit = max(512, min(120000, max_chars, self.config.web_fetch_max_chars))
+        limit = max(512, min(500000, max_chars, self.config.web_fetch_max_chars))
         ssl_context: ssl.SSLContext | None = None
         if parsed.scheme == "https":
             if self.config.web_skip_tls_verify:

@@ -104,7 +104,7 @@ cd $HOME\Desktop\officetool
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
-- `read_text_file`: 读文本文件
+- `read_text_file`: 读文本文件（支持 `start_char + max_chars` 分块读取大文件）
 - `copy_file`: 二进制安全复制文件（推荐用于“复制整个文件”）
 - `write_text_file`: 新建/覆盖写文本文件
 - `replace_in_file`: 按目标文本做替换（支持一次或多次）
@@ -120,6 +120,7 @@ cd $HOME\Desktop\officetool
 - 如遇证书链异常，可设置 `OFFICETOOL_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
 - 若未配置上述参数且遇到证书校验失败，`fetch_web` 也会自动降级重试一次（返回 `warning` 提示）
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）
+- 大文件建议让助手按块读取（例如每次 `max_chars=200000`，再用下一块 `start_char=end_char` 继续）
 
 ### 上下文控制
 
@@ -129,9 +130,13 @@ cd $HOME\Desktop\officetool
 ### 参数解释（页面左侧）
 
 - `通用模式 / 编码模式`：一键切换模型与参数预设（编码模式默认 `gpt-5.1-codex-mini`）。
-- `最大输出 tokens`：单次回复的 token 上限。默认 `32000`，可按任务调整（网关若有限制会报错）。
-- `上下文消息条数`：每次请求带入最近多少条历史消息。默认 `100`。
+- `最大输出 tokens`：单次回复的 token 上限。默认 `128000`（网关若有限制会报错）。
+- `上下文消息条数`：每次请求带入最近多少条历史消息。默认 `2000`，页面最高可设置到 `2000`。
 - `回答长度`：输出风格开关（短/中/长），用于控制回答详细程度，不等于固定 token 数。
+- `Token 统计`：
+  - 输入 tokens = 你发给模型的内容（system + history + 当前问题 + 工具结果等）
+  - 输出 tokens = 模型回给你的内容
+  - 费用 = 按 `输入/输出` 分别计价后相加（页面显示本轮/会话/全局累计 USD）
 
 ### API 地址配置
 
@@ -142,6 +147,7 @@ cd $HOME\Desktop\officetool
 - 摘要模型变量为 `OFFICETOOL_SUMMARY_MODEL`（兼容别名 `OFFICETOOL_SUMMARY_MODE`）
 - 温度默认不强制传参；如需指定可设置 `OFFICETOOL_TEMPERATURE`（例如 `0` 或 `1`）
 - 如网页抓取报 `CERTIFICATE_VERIFY_FAILED`（如 basic constraints not marked critical），请设置：`OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`
+- 模型价格来源：OpenAI 官方定价页（[openai.com/api/pricing](https://openai.com/api/pricing/)），当前内置表按 2026-02-12 的公开价格写入 `app/pricing.py`
 
 ## 3. 目录结构
 

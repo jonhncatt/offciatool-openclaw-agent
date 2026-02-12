@@ -157,12 +157,13 @@ class UploadStore:
         self._save_index(index)
 
 
-def _empty_totals() -> dict[str, int]:
+def _empty_totals() -> dict[str, int | float]:
     return {
         "requests": 0,
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
+        "estimated_cost_usd": 0.0,
     }
 
 
@@ -193,11 +194,12 @@ class TokenStatsStore:
     def clear(self) -> None:
         self._write(self._new_state())
 
-    def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, int]:
+    def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, float]:
         return {
             "input_tokens": int(usage.get("input_tokens", 0) or 0),
             "output_tokens": int(usage.get("output_tokens", 0) or 0),
             "total_tokens": int(usage.get("total_tokens", 0) or 0),
+            "estimated_cost_usd": float(usage.get("estimated_cost_usd", 0.0) or 0.0),
         }
 
     def add_usage(self, session_id: str, usage: dict[str, Any], model: str | None = None) -> dict[str, Any]:
@@ -209,6 +211,7 @@ class TokenStatsStore:
         totals["input_tokens"] = int(totals.get("input_tokens", 0) or 0) + norm["input_tokens"]
         totals["output_tokens"] = int(totals.get("output_tokens", 0) or 0) + norm["output_tokens"]
         totals["total_tokens"] = int(totals.get("total_tokens", 0) or 0) + norm["total_tokens"]
+        totals["estimated_cost_usd"] = float(totals.get("estimated_cost_usd", 0.0) or 0.0) + norm["estimated_cost_usd"]
 
         sessions = data.setdefault("sessions", {})
         sess = sessions.setdefault(session_id, _empty_totals())
@@ -216,6 +219,7 @@ class TokenStatsStore:
         sess["input_tokens"] = int(sess.get("input_tokens", 0) or 0) + norm["input_tokens"]
         sess["output_tokens"] = int(sess.get("output_tokens", 0) or 0) + norm["output_tokens"]
         sess["total_tokens"] = int(sess.get("total_tokens", 0) or 0) + norm["total_tokens"]
+        sess["estimated_cost_usd"] = float(sess.get("estimated_cost_usd", 0.0) or 0.0) + norm["estimated_cost_usd"]
 
         records = data.setdefault("records", [])
         records.append(
@@ -227,6 +231,11 @@ class TokenStatsStore:
                 "output_tokens": norm["output_tokens"],
                 "total_tokens": norm["total_tokens"],
                 "llm_calls": int(usage.get("llm_calls", 0) or 0),
+                "estimated_cost_usd": norm["estimated_cost_usd"],
+                "pricing_known": bool(usage.get("pricing_known", False)),
+                "pricing_model": usage.get("pricing_model"),
+                "input_price_per_1m": usage.get("input_price_per_1m"),
+                "output_price_per_1m": usage.get("output_price_per_1m"),
             }
         )
 

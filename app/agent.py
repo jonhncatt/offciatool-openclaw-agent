@@ -33,7 +33,8 @@ class ListDirectoryArgs(BaseModel):
 
 class ReadTextFileArgs(BaseModel):
     path: str
-    max_chars: int = Field(default=10000, ge=128, le=50000)
+    start_char: int = Field(default=0, ge=0)
+    max_chars: int = Field(default=200000, ge=128, le=1000000)
 
 
 class CopyFileArgs(BaseModel):
@@ -60,7 +61,7 @@ class ReplaceInFileArgs(BaseModel):
 
 class FetchWebArgs(BaseModel):
     url: str
-    max_chars: int = Field(default=24000, ge=512, le=120000)
+    max_chars: int = Field(default=120000, ge=512, le=500000)
     timeout_sec: int = Field(default=12, ge=3, le=30)
 
 
@@ -91,7 +92,7 @@ class OfficeAgent:
         if len(turns) <= self.config.summary_trigger_turns:
             return False
 
-        keep = max(2, min(200, keep_last_turns))
+        keep = max(2, min(2000, keep_last_turns))
         older = turns[:-keep]
         recent = turns[-keep:]
         if not older:
@@ -173,6 +174,7 @@ class OfficeAgent:
                     "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
                     f"可访问路径根目录: {allowed_roots_text}\n"
                     "读取文件优先使用 list_directory/read_text_file；"
+                    "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
                     "当联网抓取返回 warning（如脚本/反爬页面）时，不要给确定性结论，"
@@ -220,7 +222,7 @@ class OfficeAgent:
             execution_trace.append(f"模型请求失败: {exc}")
             return f"请求模型失败: {exc}", tool_events, attachment_note, execution_plan, execution_trace, usage_total
 
-        for _ in range(6):
+        for _ in range(12):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not settings.enable_tools or not tool_calls:
                 break
@@ -356,7 +358,7 @@ class OfficeAgent:
             ),
             self._StructuredTool.from_function(
                 name="read_text_file",
-                description="Read a UTF-8 text file in workspace.",
+                description="Read a UTF-8 text file in workspace. Supports chunked reads with start_char.",
                 args_schema=ReadTextFileArgs,
                 func=self._read_text_file_tool,
             ),
@@ -394,8 +396,8 @@ class OfficeAgent:
         result = self.tools.list_directory(path=path, max_entries=max_entries)
         return json.dumps(result, ensure_ascii=False)
 
-    def _read_text_file_tool(self, path: str, max_chars: int = 10000) -> str:
-        result = self.tools.read_text_file(path=path, max_chars=max_chars)
+    def _read_text_file_tool(self, path: str, start_char: int = 0, max_chars: int = 200000) -> str:
+        result = self.tools.read_text_file(path=path, start_char=start_char, max_chars=max_chars)
         return json.dumps(result, ensure_ascii=False)
 
     def _copy_file_tool(
@@ -437,7 +439,7 @@ class OfficeAgent:
         )
         return json.dumps(result, ensure_ascii=False)
 
-    def _fetch_web_tool(self, url: str, max_chars: int = 24000, timeout_sec: int = 12) -> str:
+    def _fetch_web_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
         result = self.tools.fetch_web(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
 

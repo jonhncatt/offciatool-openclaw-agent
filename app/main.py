@@ -21,6 +21,7 @@ from app.models import (
     TokenUsage,
     UploadResponse,
 )
+from app.pricing import estimate_usage_cost
 from app.storage import SessionStore, TokenStatsStore, UploadStore
 
 config = load_config()
@@ -154,10 +155,26 @@ def chat(req: ChatRequest) -> ChatResponse:
     session_store.append_turn(session, role="assistant", text=text)
     session_store.save(session)
 
+    selected_model = req.settings.model or config.default_model
+    pricing_meta = estimate_usage_cost(
+        model=selected_model,
+        input_tokens=token_usage.get("input_tokens", 0),
+        output_tokens=token_usage.get("output_tokens", 0),
+    )
+    token_usage = {**token_usage, **pricing_meta}
+    if pricing_meta.get("pricing_known"):
+        execution_trace.append(
+            "费用估算: "
+            f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
+            f"output ${pricing_meta.get('output_price_per_1m')}/1M."
+        )
+    else:
+        execution_trace.append(f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。")
+
     stats_snapshot = token_stats_store.add_usage(
         session_id=session["id"],
         usage=token_usage,
-        model=req.settings.model or config.default_model,
+        model=selected_model,
     )
     session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
     global_totals_raw = stats_snapshot.get("totals", {})

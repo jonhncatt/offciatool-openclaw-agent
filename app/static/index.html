@@ -26,12 +26,12 @@
         <div id="modeStatus" class="field-hint">当前模式：通用模式</div>
 
         <label>最大输出 tokens
-          <input id="tokenInput" type="number" min="120" max="64000" value="32000" />
+          <input id="tokenInput" type="number" min="120" max="128000" value="128000" />
           <span class="field-hint">单次回复最多可生成的 token 上限，不是固定输出长度。</span>
         </label>
 
         <label>上下文消息条数
-          <input id="ctxInput" type="number" min="2" max="200" value="100" />
+          <input id="ctxInput" type="number" min="2" max="2000" value="2000" />
           <span class="field-hint">只会带入最近 N 条历史消息，不是“思考 N 轮”。</span>
         </label>
 
@@ -59,9 +59,14 @@
         <div class="session-box">
           <div class="session-title">Token 统计（累计，除非清除）</div>
           <pre id="tokenStatsView" class="stats-view">请求: 0
+说明: 输入=你发给模型的 tokens，输出=模型回复的 tokens
 本轮: in 0 / out 0 / total 0
+本轮费用(USD): 0.000000
+计费模型: - (未匹配价格表，仅统计 token)
 本会话累计: req 0 / total 0
-全局累计: req 0 / total 0</pre>
+本会话累计费用(USD): 0.000000
+全局累计: req 0 / total 0
+全局累计费用(USD): 0.000000</pre>
           <button id="clearStatsBtn" class="secondary small">清除统计</button>
         </div>
       </aside>

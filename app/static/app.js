@@ -29,16 +29,16 @@ const MODE_PRESETS = {
   general: {
     label: "通用模式",
     model: "gpt-5.1-chat",
-    maxOutputTokens: 32000,
-    maxContextTurns: 100,
+    maxOutputTokens: 128000,
+    maxContextTurns: 2000,
     responseStyle: "normal",
     enableTools: true,
   },
   coding: {
     label: "编码模式",
     model: "gpt-5.1-codex-mini",
-    maxOutputTokens: 32000,
-    maxContextTurns: 120,
+    maxOutputTokens: 128000,
+    maxContextTurns: 2000,
     responseStyle: "normal",
     enableTools: true,
   },
@@ -105,16 +105,36 @@ function refreshSession() {
   sessionIdView.textContent = state.sessionId || "(未创建)";
 }
 
+function formatUsd(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) return "0.000000";
+  return num.toFixed(6);
+}
+
+function formatPrice(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return "-";
+  return num.toFixed(2);
+}
+
 function renderTokenStats(payload) {
   if (!tokenStatsView) return;
   const last = payload?.last || {};
   const session = payload?.session || {};
   const global = payload?.global || {};
+  const pricingLine = last.pricing_known
+    ? `计费模型: ${last.pricing_model || "-"} (in $${formatPrice(last.input_price_per_1m)}/1M, out $${formatPrice(last.output_price_per_1m)}/1M)`
+    : `计费模型: ${last.pricing_model || "-"} (未匹配价格表，仅统计 token)`;
   tokenStatsView.textContent =
     `请求: ${global.requests || 0}\n` +
+    `说明: 输入=你发给模型的 tokens，输出=模型回复的 tokens\n` +
     `本轮: in ${last.input_tokens || 0} / out ${last.output_tokens || 0} / total ${last.total_tokens || 0}\n` +
+    `本轮费用(USD): ${formatUsd(last.estimated_cost_usd)}\n` +
+    `${pricingLine}\n` +
     `本会话累计: req ${session.requests || 0} / total ${session.total_tokens || 0}\n` +
-    `全局累计: req ${global.requests || 0} / total ${global.total_tokens || 0}`;
+    `本会话累计费用(USD): ${formatUsd(session.estimated_cost_usd)}\n` +
+    `全局累计: req ${global.requests || 0} / total ${global.total_tokens || 0}\n` +
+    `全局累计费用(USD): ${formatUsd(global.estimated_cost_usd)}`;
 }
 
 async function refreshTokenStatsFromServer() {
@@ -202,8 +222,8 @@ async function handleFiles(files) {
 function getSettings() {
   return {
     model: modelInput.value.trim() || null,
-    max_output_tokens: Number(tokenInput.value || 32000),
-    max_context_turns: Number(ctxInput.value || 100),
+    max_output_tokens: Number(tokenInput.value || 128000),
+    max_context_turns: Number(ctxInput.value || 2000),
     enable_tools: toolInput.checked,
     response_style: styleInput.value,
   };
