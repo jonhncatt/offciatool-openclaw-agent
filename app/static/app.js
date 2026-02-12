@@ -173,7 +173,6 @@ async function sendMessage() {
     const names = state.attachments.map((x) => x.name).join("，");
     addBubble("system", `本轮将携带 ${state.attachments.length} 个附件：${names}`);
   }
-  addBubble("system", "执行中:\n1. 生成执行计划\n2. 加载历史和附件\n3. 调用模型并按需执行工具");
   messageInput.value = "";
   sendBtn.disabled = true;
   state.sending = true;
@@ -213,11 +212,6 @@ async function sendMessage() {
       const missing = new Set(data.missing_attachment_ids);
       state.attachments = state.attachments.filter((x) => !missing.has(x.id));
       refreshFileList();
-    }
-
-    const planText = formatNumberedLines("执行计划", data.execution_plan || []);
-    if (planText) {
-      addBubble("system", planText, null);
     }
 
     const traceText = formatNumberedLines("执行轨迹", data.execution_trace || []);
