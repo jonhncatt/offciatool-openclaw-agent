@@ -153,6 +153,11 @@ def _normalize_url_for_request(raw_url: str) -> str:
     return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
 
 
+def _is_cert_verify_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "certificate_verify_failed" in text or "certificate verify failed" in text
+
+
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -476,8 +481,26 @@ class LocalToolExecutor:
             method="GET",
         )
 
+        tls_warning: str | None = None
+
+        def _open(current_context: ssl.SSLContext | None):
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=current_context))
+            return opener.open(req, timeout=timeout_val)
+
         try:
-            with urllib.request.urlopen(req, timeout=timeout_val, context=ssl_context) as resp:
+            try:
+                resp_cm = _open(ssl_context)
+            except Exception as first_exc:
+                # Pragmatic fallback for enterprise TLS chains:
+                # if verification fails and user did not explicitly disable it,
+                # retry once with verification off for fetch_web only.
+                if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
+                    tls_warning = "TLS verify failed; fetch_web auto-retried with verify disabled."
+                    resp_cm = _open(ssl._create_unverified_context())
+                else:
+                    raise
+
+            with resp_cm as resp:
                 status = getattr(resp, "status", None) or 200
                 content_type = (resp.headers.get("Content-Type") or "").lower()
                 raw = resp.read(limit + 1)
@@ -493,6 +516,7 @@ class LocalToolExecutor:
                         "binary": True,
                         "size_preview_bytes": len(raw),
                         "truncated": truncated,
+                        "warning": tls_warning,
                     }
 
                 text = raw.decode("utf-8", errors="ignore")
@@ -504,6 +528,8 @@ class LocalToolExecutor:
                             "页面正文较少，可能是 JS 动态渲染或反爬页面。"
                             "建议改用该站点公开 API，或换一个可直读正文的页面。"
                         )
+                    if tls_warning:
+                        warning = f"{tls_warning} {warning}" if warning else tls_warning
                     return {
                         "ok": True,
                         "url": url,
@@ -526,6 +552,7 @@ class LocalToolExecutor:
                     "truncated": truncated,
                     "content": text,
                     "length": len(text),
+                    "warning": tls_warning,
                 }
         except urllib.error.HTTPError as exc:
             body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
