@@ -116,7 +116,7 @@ async function handleFiles(files) {
 function getSettings() {
   return {
     model: modelInput.value.trim() || null,
-    max_output_tokens: Number(tokenInput.value || 1600),
+    max_output_tokens: Number(tokenInput.value || 3200),
     max_context_turns: Number(ctxInput.value || 16),
     enable_tools: toolInput.checked,
     response_style: styleInput.value,
