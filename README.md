@@ -72,6 +72,26 @@ set OFFCIATOOL_USE_RESPONSES_API=false
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
+### Windows 日常启动（后续每次）
+
+首次配置完成后，后续每天只需要下面几步：
+
+```powershell
+cd $HOME\Desktop\offciatool
+git pull
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+建议把以下环境变量做成长期生效（仅需一次）：
+
+```powershell
+setx OPENAI_API_KEY "<YOUR_API_KEY>"
+setx OFFCIATOOL_OPENAI_BASE_URL "https://<YOUR_COMPANY_API_BASE>/v1"
+setx OFFCIATOOL_CA_CERT_PATH "C:\path\to\KIOXIAInternalRootCA.cer"
+setx OFFCIATOOL_USE_RESPONSES_API "false"
+```
+
 ## 2. 功能说明
 
 ### 图片/文档
