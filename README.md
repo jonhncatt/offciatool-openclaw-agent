@@ -5,7 +5,7 @@
 - 对话 + 上传图片/文档（支持拖拽）
 - 可选本地工具执行（白名单命令）
 - 会话自动摘要压缩，避免上下文无限增长
-- 页面显示“执行计划 + 执行轨迹”，可见每次调用实际做了什么
+- 页面显示“执行轨迹”，可见每次调用实际做了什么
 - 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
 - 可控输出长度（short/normal/long）和 token 上限
 - LLM 驱动层使用 `langchain_openai`（支持 OpenAI 兼容网关）
@@ -87,11 +87,16 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```powershell
 cd $HOME\Desktop\officetool
 git pull
-.\.venv\Scripts\Activate.ps1
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.\start_windows.ps1
 ```
 
-建议把以下环境变量做成长期生效（仅需一次）：
+说明：
+
+- `start_windows.ps1` 会自动读取项目根目录 `.env`
+- `start_windows.ps1` 会自动激活 `.venv` 并启动服务
+- 可选参数示例：`.\start_windows.ps1 -Port 8081 -NoReload`
+
+如果你不想用 `.env`，也可以把变量做成长期生效（仅需一次）：
 
 ```powershell
 setx OPENAI_API_KEY "<YOUR_API_KEY>"
