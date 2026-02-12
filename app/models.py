@@ -26,6 +26,20 @@ class ToolEvent(BaseModel):
     output_preview: str
 
 
+class TokenUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
+
+
+class TokenTotals(BaseModel):
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
 class ChatResponse(BaseModel):
     session_id: str
     text: str
@@ -33,6 +47,9 @@ class ChatResponse(BaseModel):
     execution_plan: list[str] = Field(default_factory=list)
     execution_trace: list[str] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
+    global_token_totals: TokenTotals = Field(default_factory=TokenTotals)
     turn_count: int
     summarized: bool = False
 
@@ -52,3 +69,13 @@ class NewSessionResponse(BaseModel):
 class HealthResponse(BaseModel):
     ok: bool
     model_default: str
+
+
+class TokenStatsResponse(BaseModel):
+    totals: TokenTotals = Field(default_factory=TokenTotals)
+    sessions: dict[str, TokenTotals] = Field(default_factory=dict)
+    records: list[dict] = Field(default_factory=list)
+
+
+class ClearStatsResponse(BaseModel):
+    ok: bool

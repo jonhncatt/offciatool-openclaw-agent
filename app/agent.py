@@ -36,6 +36,12 @@ class ReadTextFileArgs(BaseModel):
     max_chars: int = Field(default=10000, ge=128, le=50000)
 
 
+class FetchWebArgs(BaseModel):
+    url: str
+    max_chars: int = Field(default=24000, ge=512, le=120000)
+    timeout_sec: int = Field(default=12, ge=3, le=30)
+
+
 class OfficeAgent:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -129,11 +135,12 @@ class OfficeAgent:
         user_message: str,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
-    ) -> tuple[str, list[ToolEvent], str, list[str], list[str]]:
+    ) -> tuple[str, list[ToolEvent], str, list[str], list[str], dict[str, int]]:
         model = settings.model or self.config.default_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
         execution_plan = self._build_execution_plan(attachment_metas=attachment_metas, settings=settings)
         execution_trace: list[str] = []
+        usage_total = self._empty_usage()
 
         messages: list[Any] = [
             self._SystemMessage(content=f"{self.config.system_prompt}\n\n输出风格: {style_hint}")
@@ -171,9 +178,10 @@ class OfficeAgent:
                 max_output_tokens=settings.max_output_tokens,
                 enable_tools=settings.enable_tools,
             )
+            usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
         except Exception as exc:
             execution_trace.append(f"模型请求失败: {exc}")
-            return f"请求模型失败: {exc}", tool_events, attachment_note, execution_plan, execution_trace
+            return f"请求模型失败: {exc}", tool_events, attachment_note, execution_plan, execution_trace, usage_total
 
         for _ in range(6):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
@@ -210,15 +218,23 @@ class OfficeAgent:
 
             try:
                 ai_msg = runner.invoke(messages)
+                usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
             except Exception as exc:
                 execution_trace.append(f"工具后续推理失败: {exc}")
-                return f"工具执行后续推理失败: {exc}", tool_events, attachment_note, execution_plan, execution_trace
+                return (
+                    f"工具执行后续推理失败: {exc}",
+                    tool_events,
+                    attachment_note,
+                    execution_plan,
+                    execution_trace,
+                    usage_total,
+                )
 
         text = self._content_to_text(getattr(ai_msg, "content", ""))
         if not text.strip():
             text = "模型未返回可见文本。"
         execution_trace.append("已生成最终答复。")
-        return text, tool_events, attachment_note, execution_plan, execution_trace
+        return text, tool_events, attachment_note, execution_plan, execution_trace, usage_total
 
     def _build_execution_plan(self, attachment_metas: list[dict[str, Any]], settings: ChatSettings) -> list[str]:
         plan = ["理解你的目标和约束。"]
@@ -226,7 +242,7 @@ class OfficeAgent:
             plan.append(f"解析附件内容（{len(attachment_metas)} 个）。")
         plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
         if settings.enable_tools:
-            plan.append("如有必要调用本地工具（读文件/列目录/执行命令）获取事实。")
+            plan.append("如有必要调用工具（读文件/列目录/执行命令/联网抓取）获取事实。")
         plan.append("汇总结论并按你选择的回答长度输出。")
         return plan
 
@@ -306,6 +322,12 @@ class OfficeAgent:
                 args_schema=ReadTextFileArgs,
                 func=self._read_text_file_tool,
             ),
+            self._StructuredTool.from_function(
+                name="fetch_web",
+                description="Fetch web content from a URL for information lookup.",
+                args_schema=FetchWebArgs,
+                func=self._fetch_web_tool,
+            ),
         ]
 
     def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
@@ -318,6 +340,10 @@ class OfficeAgent:
 
     def _read_text_file_tool(self, path: str, max_chars: int = 10000) -> str:
         result = self.tools.read_text_file(path=path, max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _fetch_web_tool(self, url: str, max_chars: int = 24000, timeout_sec: int = 12) -> str:
+        result = self.tools.fetch_web(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
 
     def _build_user_content(
@@ -408,6 +434,52 @@ class OfficeAgent:
                 if isinstance(text, str) and text:
                     out.append(text)
         return "\n".join(out).strip()
+
+    def _empty_usage(self) -> dict[str, int]:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "llm_calls": 0,
+        }
+
+    def _merge_usage(self, base: dict[str, int], extra: dict[str, int]) -> dict[str, int]:
+        merged = dict(base)
+        merged["input_tokens"] = int(merged.get("input_tokens", 0)) + int(extra.get("input_tokens", 0))
+        merged["output_tokens"] = int(merged.get("output_tokens", 0)) + int(extra.get("output_tokens", 0))
+        merged["total_tokens"] = int(merged.get("total_tokens", 0)) + int(extra.get("total_tokens", 0))
+        merged["llm_calls"] = int(merged.get("llm_calls", 0)) + int(extra.get("llm_calls", 0))
+        return merged
+
+    def _extract_usage_from_message(self, message: Any) -> dict[str, int]:
+        usage = self._empty_usage()
+
+        usage_metadata = getattr(message, "usage_metadata", None)
+        if isinstance(usage_metadata, dict):
+            usage["input_tokens"] = int(usage_metadata.get("input_tokens") or usage_metadata.get("prompt_tokens") or 0)
+            usage["output_tokens"] = int(
+                usage_metadata.get("output_tokens") or usage_metadata.get("completion_tokens") or 0
+            )
+            usage["total_tokens"] = int(usage_metadata.get("total_tokens") or 0)
+
+        response_metadata = getattr(message, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            token_usage = response_metadata.get("token_usage")
+            if isinstance(token_usage, dict):
+                if usage["input_tokens"] <= 0:
+                    usage["input_tokens"] = int(token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0)
+                if usage["output_tokens"] <= 0:
+                    usage["output_tokens"] = int(
+                        token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0
+                    )
+                if usage["total_tokens"] <= 0:
+                    usage["total_tokens"] = int(token_usage.get("total_tokens") or 0)
+
+        if usage["total_tokens"] <= 0:
+            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+
+        usage["llm_calls"] = 1 if (usage["input_tokens"] > 0 or usage["output_tokens"] > 0 or usage["total_tokens"] > 0) else 0
+        return usage
 
     def _normalize_base_url(self, raw_url: str) -> str:
         """

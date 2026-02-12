@@ -13,6 +13,8 @@ const messageInput = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const newSessionBtn = document.getElementById("newSessionBtn");
 const sessionIdView = document.getElementById("sessionIdView");
+const tokenStatsView = document.getElementById("tokenStatsView");
+const clearStatsBtn = document.getElementById("clearStatsBtn");
 
 const modelInput = document.getElementById("modelInput");
 const tokenInput = document.getElementById("tokenInput");
@@ -54,6 +56,33 @@ function refreshSession() {
   sessionIdView.textContent = state.sessionId || "(未创建)";
 }
 
+function renderTokenStats(payload) {
+  if (!tokenStatsView) return;
+  const last = payload?.last || {};
+  const session = payload?.session || {};
+  const global = payload?.global || {};
+  tokenStatsView.textContent =
+    `请求: ${global.requests || 0}\n` +
+    `本轮: in ${last.input_tokens || 0} / out ${last.output_tokens || 0} / total ${last.total_tokens || 0}\n` +
+    `本会话累计: req ${session.requests || 0} / total ${session.total_tokens || 0}\n` +
+    `全局累计: req ${global.requests || 0} / total ${global.total_tokens || 0}`;
+}
+
+async function refreshTokenStatsFromServer() {
+  if (!tokenStatsView) return;
+  try {
+    const res = await fetch("/api/stats");
+    if (!res.ok) return;
+    const data = await res.json();
+    const sessionTotals = state.sessionId ? (data.sessions?.[state.sessionId] || {}) : {};
+    renderTokenStats({
+      last: {},
+      session: sessionTotals,
+      global: data.totals || {},
+    });
+  } catch {}
+}
+
 function refreshFileList() {
   fileList.innerHTML = "";
   state.attachments.forEach((att, idx) => {
@@ -79,6 +108,7 @@ async function createSession() {
   const data = await res.json();
   state.sessionId = data.session_id;
   refreshSession();
+  await refreshTokenStatsFromServer();
 }
 
 async function uploadSingle(file) {
@@ -198,6 +228,11 @@ async function sendMessage() {
     addBubble("assistant", data.text, data.tool_events || []);
 
     addBubble("system", "附件已保留，可继续追问；不需要时点附件上的 × 删除。");
+    renderTokenStats({
+      last: data.token_usage || {},
+      session: data.session_token_totals || {},
+      global: data.global_token_totals || {},
+    });
   } catch (err) {
     addBubble("system", `请求失败: ${String(err)}`);
   } finally {
@@ -248,11 +283,25 @@ newSessionBtn.addEventListener("click", async () => {
   addBubble("system", "已新建会话。", null);
 });
 
+if (clearStatsBtn) {
+  clearStatsBtn.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/stats/clear", { method: "POST" });
+      if (!res.ok) throw new Error(`clear failed: ${res.status}`);
+      await refreshTokenStatsFromServer();
+      addBubble("system", "Token 统计已清除。");
+    } catch (err) {
+      addBubble("system", `清除统计失败: ${String(err)}`);
+    }
+  });
+}
+
 (async function boot() {
   try {
     const health = await fetch("/api/health").then((r) => r.json());
     addBubble("system", `服务已启动，默认模型：${health.model_default}`);
     modelInput.placeholder = health.model_default || "gpt-4.1";
+    await refreshTokenStatsFromServer();
   } catch {
     addBubble("system", "健康检查失败，请确认后端已运行。", null);
   }

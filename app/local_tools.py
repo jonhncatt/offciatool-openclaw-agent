@@ -3,19 +3,34 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from app.config import AppConfig
 
 
-def _resolve_workspace_path(workspace_root: Path, raw_path: str) -> Path:
+def _is_within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _resolve_workspace_path(config: AppConfig, raw_path: str) -> Path:
     path = Path(raw_path)
     if not path.is_absolute():
-        path = workspace_root / path
+        path = config.workspace_root / path
     path = path.resolve()
-    if path != workspace_root and workspace_root not in path.parents:
-        raise ValueError(f"Path out of workspace: {raw_path}")
+
+    if config.allow_any_path:
+        return path
+
+    for root in config.allowed_roots:
+        if _is_within(path, root):
+            return path
+
+    allowed = ", ".join(str(p) for p in config.allowed_roots)
+    raise ValueError(f"Path out of allowed roots: {raw_path}. Allowed roots: {allowed}")
     return path
 
 
@@ -74,6 +89,21 @@ class LocalToolExecutor:
                     "additionalProperties": False,
                 },
             },
+            {
+                "type": "function",
+                "name": "fetch_web",
+                "description": "Fetch web content from a URL for information lookup.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "http/https URL"},
+                        "max_chars": {"type": "integer", "minimum": 512, "maximum": 120000, "default": 24000},
+                        "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 30, "default": 12},
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -83,6 +113,8 @@ class LocalToolExecutor:
             return self.list_directory(**arguments)
         if name == "read_text_file":
             return self.read_text_file(**arguments)
+        if name == "fetch_web":
+            return self.fetch_web(**arguments)
         return {"ok": False, "error": f"Unknown tool: {name}"}
 
     def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
@@ -108,7 +140,7 @@ class LocalToolExecutor:
             }
 
         try:
-            real_cwd = _resolve_workspace_path(self.config.workspace_root, cwd)
+            real_cwd = _resolve_workspace_path(self.config, cwd)
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -136,7 +168,7 @@ class LocalToolExecutor:
 
     def list_directory(self, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
         try:
-            real_path = _resolve_workspace_path(self.config.workspace_root, path)
+            real_path = _resolve_workspace_path(self.config, path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_dir():
@@ -159,7 +191,7 @@ class LocalToolExecutor:
 
     def read_text_file(self, path: str, max_chars: int = 10000) -> dict[str, Any]:
         try:
-            real_path = _resolve_workspace_path(self.config.workspace_root, path)
+            real_path = _resolve_workspace_path(self.config, path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -170,6 +202,79 @@ class LocalToolExecutor:
             return {"ok": True, "path": str(real_path), "content": text, "length": len(text)}
         except Exception as exc:
             return {"ok": False, "error": f"read_text_file failed: {exc}"}
+
+    def _domain_allowed(self, host: str) -> bool:
+        if self.config.web_allow_all_domains:
+            return True
+
+        host = host.lower().strip(".")
+        for allowed in self.config.web_allowed_domains:
+            d = allowed.lower().strip(".")
+            if host == d or host.endswith("." + d):
+                return True
+        return False
+
+    def fetch_web(self, url: str, max_chars: int = 24000, timeout_sec: int = 12) -> dict[str, Any]:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return {"ok": False, "error": "Only http/https URLs are supported"}
+        if not parsed.netloc:
+            return {"ok": False, "error": "Invalid URL"}
+
+        host = parsed.hostname or ""
+        if not self._domain_allowed(host):
+            return {
+                "ok": False,
+                "error": f"Domain not allowed: {host}. Allowed: {', '.join(self.config.web_allowed_domains)}",
+            }
+
+        timeout_val = max(3, min(30, timeout_sec))
+        limit = max(512, min(120000, max_chars, self.config.web_fetch_max_chars))
+
+        req = urllib.request.Request(
+            url=url,
+            headers={
+                "User-Agent": "OffciatoolAgent/1.0 (+https://github.com/jonhncatt/offciatool)",
+                "Accept": "text/html,application/json,text/plain,application/xml;q=0.9,*/*;q=0.5",
+            },
+            method="GET",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_val) as resp:
+                status = getattr(resp, "status", None) or 200
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                raw = resp.read(limit + 1)
+                truncated = len(raw) > limit
+                raw = raw[:limit]
+
+                if any(x in content_type for x in ["application/octet-stream", "image/", "audio/", "video/"]):
+                    return {
+                        "ok": True,
+                        "url": url,
+                        "status": status,
+                        "content_type": content_type,
+                        "binary": True,
+                        "size_preview_bytes": len(raw),
+                        "truncated": truncated,
+                    }
+
+                text = raw.decode("utf-8", errors="ignore")
+                return {
+                    "ok": True,
+                    "url": url,
+                    "status": status,
+                    "content_type": content_type,
+                    "binary": False,
+                    "truncated": truncated,
+                    "content": text,
+                    "length": len(text),
+                }
+        except urllib.error.HTTPError as exc:
+            body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+            return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}
+        except Exception as exc:
+            return {"ok": False, "error": f"fetch_web failed: {exc}"}
 
 
 def parse_json_arguments(raw: str | dict[str, Any] | None) -> dict[str, Any]:

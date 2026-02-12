@@ -6,6 +6,7 @@
 - 可选本地工具执行（白名单命令）
 - 会话自动摘要压缩，避免上下文无限增长
 - 页面显示“执行计划 + 执行轨迹”，可见每次调用实际做了什么
+- 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
 - 可控输出长度（short/normal/long）和 token 上限
 - LLM 驱动层使用 `langchain_openai`（支持 OpenAI 兼容网关）
 - 附件链路带“未找到附件”显式告警，避免只看到“上传成功”但上下文没带上
@@ -49,6 +50,8 @@ $env:OPENAI_API_KEY = "<YOUR_API_KEY>"
 $env:OFFCIATOOL_OPENAI_BASE_URL = "https://<YOUR_COMPANY_API_BASE>/v1"
 $env:OFFCIATOOL_CA_CERT_PATH = "C:\path\to\KIOXIAInternalRootCA.cer"
 $env:OFFCIATOOL_USE_RESPONSES_API = "false"
+$env:OFFCIATOOL_EXTRA_ALLOWED_ROOTS = "C:\Users\<YOU>\Desktop;D:\work"
+$env:OFFCIATOOL_WEB_ALLOWED_DOMAINS = "openai.com,github.com,docs.python.org"
 
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
@@ -71,6 +74,8 @@ set OPENAI_API_KEY=<YOUR_API_KEY>
 set OFFCIATOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
 set OFFCIATOOL_CA_CERT_PATH=C:\path\to\KIOXIAInternalRootCA.cer
 set OFFCIATOOL_USE_RESPONSES_API=false
+set OFFCIATOOL_EXTRA_ALLOWED_ROOTS=C:\Users\<YOU>\Desktop;D:\work
+set OFFCIATOOL_WEB_ALLOWED_DOMAINS=openai.com,github.com,docs.python.org
 
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
@@ -93,6 +98,8 @@ setx OPENAI_API_KEY "<YOUR_API_KEY>"
 setx OFFCIATOOL_OPENAI_BASE_URL "https://<YOUR_COMPANY_API_BASE>/v1"
 setx OFFCIATOOL_CA_CERT_PATH "C:\path\to\KIOXIAInternalRootCA.cer"
 setx OFFCIATOOL_USE_RESPONSES_API "false"
+setx OFFCIATOOL_EXTRA_ALLOWED_ROOTS "C:\Users\<YOU>\Desktop;D:\work"
+setx OFFCIATOOL_WEB_ALLOWED_DOMAINS "openai.com,github.com,docs.python.org"
 ```
 
 ## 2. 功能说明
@@ -107,16 +114,19 @@ setx OFFCIATOOL_USE_RESPONSES_API "false"
 
 ### Agent 工具调用
 
-默认开放 3 个工具：
+默认开放 4 个工具：
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
 - `read_text_file`: 读文本文件
+- `fetch_web`: 联网抓取网页/JSON 文本
 
 安全约束：
 
 - 命令白名单（`OFFCIATOOL_ALLOWED_COMMANDS`）
-- 路径只能在 workspace 根目录内
+- 路径默认只能在 workspace 根目录内；可用 `OFFCIATOOL_EXTRA_ALLOWED_ROOTS` 扩展
+- 可用 `OFFCIATOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境）
+- 联网抓取可用 `OFFCIATOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 
 ### 上下文控制
 

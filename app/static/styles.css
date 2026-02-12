@@ -145,6 +145,12 @@ button.secondary {
   border: 1px solid #c2cfbf;
 }
 
+button.small {
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
 .session-box {
   margin-top: 8px;
   border: 1px dashed var(--line);
@@ -156,6 +162,18 @@ button.secondary {
   font-size: 11px;
   opacity: 0.65;
   margin-bottom: 4px;
+}
+
+.stats-view {
+  margin: 6px 0 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  background: #f4f8f2;
+  border: 1px solid #d7e0d3;
+  border-radius: 8px;
+  padding: 8px;
 }
 
 .chat-wrap {

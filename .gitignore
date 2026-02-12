@@ -8,3 +8,4 @@ app/data/sessions/*
 !app/data/sessions/.gitkeep
 app/data/uploads/*
 !app/data/uploads/.gitkeep
+app/data/token_stats.json

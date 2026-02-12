@@ -49,6 +49,15 @@
           <div class="session-title">Session ID</div>
           <code id="sessionIdView">(未创建)</code>
         </div>
+
+        <div class="session-box">
+          <div class="session-title">Token 统计（累计，除非清除）</div>
+          <pre id="tokenStatsView" class="stats-view">请求: 0
+本轮: in 0 / out 0 / total 0
+本会话累计: req 0 / total 0
+全局累计: req 0 / total 0</pre>
+          <button id="clearStatsBtn" class="secondary small">清除统计</button>
+        </div>
       </aside>
 
       <section class="chat-wrap">
@@ -62,6 +71,7 @@
           <div id="fileList" class="file-list"></div>
 
           <textarea id="messageInput" placeholder="输入你的任务，例如：整理这份文档要点、比较两张图里的差异、然后帮我执行本地命令检查项目状态。"></textarea>
+          <div class="field-hint">快捷键：Enter 发送，Shift+Enter 换行。</div>
 
           <div class="action-row">
             <button id="sendBtn">发送</button>

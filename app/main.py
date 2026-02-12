@@ -10,12 +10,23 @@ from fastapi.staticfiles import StaticFiles
 
 from app.agent import OfficeAgent
 from app.config import load_config
-from app.models import ChatRequest, ChatResponse, HealthResponse, NewSessionResponse, UploadResponse
-from app.storage import SessionStore, UploadStore
+from app.models import (
+    ChatRequest,
+    ChatResponse,
+    ClearStatsResponse,
+    HealthResponse,
+    NewSessionResponse,
+    TokenStatsResponse,
+    TokenTotals,
+    TokenUsage,
+    UploadResponse,
+)
+from app.storage import SessionStore, TokenStatsStore, UploadStore
 
 config = load_config()
 session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
+token_stats_store = TokenStatsStore(config.token_stats_path)
 _agent: OfficeAgent | None = None
 
 
@@ -75,6 +86,25 @@ async def upload(file: UploadFile = File(...)) -> UploadResponse:
     )
 
 
+@app.get("/api/stats", response_model=TokenStatsResponse)
+def get_stats() -> TokenStatsResponse:
+    raw = token_stats_store.get_stats(max_records=500)
+    sessions: dict[str, TokenTotals] = {}
+    for session_id, totals in raw.get("sessions", {}).items():
+        sessions[session_id] = TokenTotals(**totals)
+    return TokenStatsResponse(
+        totals=TokenTotals(**raw.get("totals", {})),
+        sessions=sessions,
+        records=raw.get("records", []),
+    )
+
+
+@app.post("/api/stats/clear", response_model=ClearStatsResponse)
+def clear_stats() -> ClearStatsResponse:
+    token_stats_store.clear()
+    return ClearStatsResponse(ok=True)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     if not os.environ.get("OPENAI_API_KEY"):
@@ -88,7 +118,7 @@ def chat(req: ChatRequest) -> ChatResponse:
     found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
     missing_attachment_ids = [file_id for file_id in req.attachment_ids if file_id not in found_attachment_ids]
 
-    text, tool_events, attachment_note, execution_plan, execution_trace = agent.run_chat(
+    text, tool_events, attachment_note, execution_plan, execution_trace, token_usage = agent.run_chat(
         history_turns=session.get("turns", []),
         summary=session.get("summary", ""),
         user_message=req.message,
@@ -113,6 +143,14 @@ def chat(req: ChatRequest) -> ChatResponse:
     session_store.append_turn(session, role="assistant", text=text)
     session_store.save(session)
 
+    stats_snapshot = token_stats_store.add_usage(
+        session_id=session["id"],
+        usage=token_usage,
+        model=req.settings.model or config.default_model,
+    )
+    session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
+    global_totals_raw = stats_snapshot.get("totals", {})
+
     return ChatResponse(
         session_id=session["id"],
         text=text,
@@ -120,6 +158,9 @@ def chat(req: ChatRequest) -> ChatResponse:
         execution_plan=execution_plan,
         execution_trace=execution_trace,
         missing_attachment_ids=missing_attachment_ids,
+        token_usage=TokenUsage(**token_usage),
+        session_token_totals=TokenTotals(**session_totals_raw),
+        global_token_totals=TokenTotals(**global_totals_raw),
         turn_count=len(session.get("turns", [])),
         summarized=summarized,
     )
