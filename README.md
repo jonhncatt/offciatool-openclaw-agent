@@ -99,6 +99,9 @@ setx OFFICETOOL_OPENAI_BASE_URL "https://<YOUR_COMPANY_API_BASE>/v1"
 setx OFFICETOOL_CA_CERT_PATH "C:\path\to\KIOXIAInternalRootCA.cer"
 setx OFFICETOOL_USE_RESPONSES_API "false"
 setx OFFICETOOL_EXTRA_ALLOWED_ROOTS "C:\Users\<YOU>\Desktop\workbench"
+setx OFFICETOOL_ALLOW_ANY_PATH "false"
+# 兼容旧变量名（二选一即可）
+# setx OFFCIATOOL_ALLOW_ANY_PATH "false"
 # 联网不限制域名：不要设置 OFFICETOOL_WEB_ALLOWED_DOMAINS
 ```
 
@@ -125,7 +128,7 @@ setx OFFICETOOL_EXTRA_ALLOWED_ROOTS "C:\Users\<YOU>\Desktop\workbench"
 
 - 命令白名单（`OFFICETOOL_ALLOWED_COMMANDS`）
 - 路径默认只能在 workspace 根目录内；可用 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 扩展
-- 可用 `OFFICETOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境）
+- 可用 `OFFICETOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境；兼容旧名 `OFFCIATOOL_ALLOW_ANY_PATH`）
 - 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 
 ### 上下文控制
