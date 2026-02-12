@@ -118,6 +118,40 @@ def _extract_html_text(raw_html: str, max_chars: int) -> str:
     return out
 
 
+def _normalize_url_for_request(raw_url: str) -> str:
+    """
+    Make URL safe for urllib by encoding non-ASCII host/path/query.
+    """
+    url = (raw_url or "").strip()
+    parsed = urllib.parse.urlsplit(url)
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("Only http/https URLs are supported")
+    if not parsed.netloc:
+        raise ValueError("Invalid URL")
+
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError("Invalid URL")
+    host_ascii = host.encode("idna").decode("ascii")
+
+    auth = ""
+    if parsed.username is not None:
+        auth = urllib.parse.quote(parsed.username, safe="")
+        if parsed.password is not None:
+            auth += ":" + urllib.parse.quote(parsed.password, safe="")
+        auth += "@"
+
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{auth}{host_ascii}{port}"
+
+    path = urllib.parse.quote(urllib.parse.unquote(parsed.path or "/"), safe="/%:@!$&'()*+,;=-._~")
+    query = urllib.parse.quote(urllib.parse.unquote(parsed.query or ""), safe="=&%:@!$'()*+,;/-._~")
+
+    return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
+
+
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -403,6 +437,11 @@ class LocalToolExecutor:
         if not parsed.netloc:
             return {"ok": False, "error": "Invalid URL"}
 
+        try:
+            request_url = _normalize_url_for_request(url)
+        except Exception as exc:
+            return {"ok": False, "error": f"Invalid URL: {exc}"}
+
         host = parsed.hostname or ""
         if not self._domain_allowed(host):
             return {
@@ -414,7 +453,7 @@ class LocalToolExecutor:
         limit = max(512, min(120000, max_chars, self.config.web_fetch_max_chars))
 
         req = urllib.request.Request(
-            url=url,
+            url=request_url,
             headers={
                 "User-Agent": "OfficetoolAgent/1.0",
                 "Accept": "text/html,application/json,text/plain,application/xml;q=0.9,*/*;q=0.5",
