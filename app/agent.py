@@ -36,6 +36,13 @@ class ReadTextFileArgs(BaseModel):
     max_chars: int = Field(default=10000, ge=128, le=50000)
 
 
+class CopyFileArgs(BaseModel):
+    src_path: str
+    dst_path: str
+    overwrite: bool = True
+    create_dirs: bool = True
+
+
 class WriteTextFileArgs(BaseModel):
     path: str
     content: str
@@ -166,6 +173,7 @@ class OfficeAgent:
                     "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
                     f"可访问路径根目录: {allowed_roots_text}\n"
                     "读取文件优先使用 list_directory/read_text_file；"
+                    "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
                     "当联网抓取返回 warning（如脚本/反爬页面）时，不要给确定性结论，"
                     "必须明确说明信息不足并建议改查权威来源。"
@@ -352,6 +360,12 @@ class OfficeAgent:
                 func=self._read_text_file_tool,
             ),
             self._StructuredTool.from_function(
+                name="copy_file",
+                description="Copy a file (binary-safe) from src_path to dst_path in allowed roots.",
+                args_schema=CopyFileArgs,
+                func=self._copy_file_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="write_text_file",
                 description="Create or overwrite a UTF-8 text file in workspace.",
                 args_schema=WriteTextFileArgs,
@@ -381,6 +395,17 @@ class OfficeAgent:
 
     def _read_text_file_tool(self, path: str, max_chars: int = 10000) -> str:
         result = self.tools.read_text_file(path=path, max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _copy_file_tool(
+        self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True
+    ) -> str:
+        result = self.tools.copy_file(
+            src_path=src_path,
+            dst_path=dst_path,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+        )
         return json.dumps(result, ensure_ascii=False)
 
     def _write_text_file_tool(

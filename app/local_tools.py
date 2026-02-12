@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 import ssl
 import subprocess
 import urllib.error
@@ -37,18 +38,26 @@ def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
         add(path)
         return candidates
 
+    normalized = raw.replace("\\", "/").strip("/").lower()
+    normalized_slash = raw.replace("\\", "/").strip("/")
+    if normalized:
+        # High-priority alias mapping, e.g. "workbench/a.txt" -> "<allowed_root_named_workbench>/a.txt"
+        for root in config.allowed_roots:
+            root_norm = str(root).replace("\\", "/").rstrip("/").lower()
+            if normalized == root_norm or normalized == root.name.lower():
+                add(root)
+                continue
+            prefix = f"{root.name.lower()}/"
+            if normalized.startswith(prefix):
+                suffix = normalized_slash[len(prefix) :]
+                add(root / suffix)
+
+    # Default mapping keeps backward compatibility.
     add(config.workspace_root / path)
     for root in config.allowed_roots:
         if root == config.workspace_root:
             continue
         add(root / path)
-
-    normalized = raw.replace("\\", "/").strip("/").lower()
-    if normalized:
-        for root in config.allowed_roots:
-            root_norm = str(root).replace("\\", "/").rstrip("/").lower()
-            if normalized == root_norm or normalized == root.name.lower():
-                add(root)
 
     return candidates
 
@@ -70,12 +79,14 @@ def _resolve_workspace_path(config: AppConfig, raw_path: str) -> Path:
                 return path
 
     # Fall back to first allowed candidate even if it does not exist,
-    # so upper layers can return a clear "not found" error.
+    # prefer a candidate whose parent directory exists.
     for path in candidates:
         for root in config.allowed_roots:
-            if _is_within(path, root):
+            if _is_within(path, root) and path.parent.exists():
                 return path
 
+    # Last resort: return first allowed candidate even if parent does not exist,
+    # so upper layers can return a clear "not found" error.
     for root in config.allowed_roots:
         for path in candidates:
             if _is_within(path, root):
@@ -235,6 +246,22 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "copy_file",
+                "description": "Copy a file (binary-safe) from src_path to dst_path in allowed roots.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "src_path": {"type": "string"},
+                        "dst_path": {"type": "string"},
+                        "overwrite": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                    },
+                    "required": ["src_path", "dst_path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "write_text_file",
                 "description": "Create or overwrite a UTF-8 text file in workspace.",
                 "parameters": {
@@ -290,6 +317,8 @@ class LocalToolExecutor:
             return self.list_directory(**arguments)
         if name == "read_text_file":
             return self.read_text_file(**arguments)
+        if name == "copy_file":
+            return self.copy_file(**arguments)
         if name == "write_text_file":
             return self.write_text_file(**arguments)
         if name == "replace_in_file":
@@ -378,11 +407,56 @@ class LocalToolExecutor:
             if not real_path.is_file():
                 return {"ok": False, "error": f"Not a file: {path}"}
 
-            text = real_path.read_text(encoding="utf-8", errors="ignore")
-            text = text[:max_chars]
-            return {"ok": True, "path": str(real_path), "content": text, "length": len(text)}
+            full_text = real_path.read_text(encoding="utf-8", errors="ignore")
+            total_length = len(full_text)
+            text = full_text[:max_chars]
+            truncated = total_length > len(text)
+            return {
+                "ok": True,
+                "path": str(real_path),
+                "content": text,
+                "length": len(text),
+                "total_length": total_length,
+                "truncated": truncated,
+            }
         except Exception as exc:
             return {"ok": False, "error": f"read_text_file failed: {exc}"}
+
+    def copy_file(
+        self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True
+    ) -> dict[str, Any]:
+        try:
+            src_real = _resolve_workspace_path(self.config, src_path)
+            dst_real = _resolve_workspace_path(self.config, dst_path)
+
+            if not src_real.exists():
+                return {"ok": False, "error": f"Source path not found: {src_path}"}
+            if not src_real.is_file():
+                return {"ok": False, "error": f"Source is not a file: {src_path}"}
+            if src_real == dst_real:
+                return {"ok": False, "error": "Source and destination are the same file"}
+
+            if dst_real.exists() and dst_real.is_dir():
+                return {"ok": False, "error": f"Destination is a directory: {dst_path}"}
+            if dst_real.exists() and not overwrite:
+                return {"ok": False, "error": f"Destination exists and overwrite=false: {dst_path}"}
+
+            if not dst_real.parent.exists():
+                if not create_dirs:
+                    return {"ok": False, "error": f"Destination parent not found: {dst_real.parent}"}
+                dst_real.parent.mkdir(parents=True, exist_ok=True)
+
+            action = "overwrite" if dst_real.exists() else "create"
+            shutil.copy2(src_real, dst_real)
+            return {
+                "ok": True,
+                "src_path": str(src_real),
+                "dst_path": str(dst_real),
+                "action": action,
+                "bytes": dst_real.stat().st_size,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"copy_file failed: {exc}"}
 
     def write_text_file(
         self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True
