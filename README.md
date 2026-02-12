@@ -16,6 +16,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填入 OPENAI_API_KEY
+# 如需接公司网关，再填 OFFCIATOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
 export $(grep -v '^#' .env | xargs)
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
@@ -49,6 +50,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 - 每次请求只带最近 `max_context_turns` 轮
 - 当历史轮数超过阈值时自动摘要，保留长期记忆但压缩 tokens
+
+### API 地址配置
+
+- 默认直接访问 OpenAI 官方地址
+- 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFCIATOOL_OPENAI_BASE_URL`
 
 ## 3. 目录结构
 

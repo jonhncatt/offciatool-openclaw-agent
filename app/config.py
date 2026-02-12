@@ -14,6 +14,7 @@ class AppConfig:
     workspace_root: Path
     sessions_dir: Path
     uploads_dir: Path
+    openai_base_url: str | None
     default_model: str
     summary_model: str
     system_prompt: str
@@ -44,10 +45,13 @@ def load_config() -> AppConfig:
         "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
     )
 
+    openai_base_url = (os.environ.get("OFFCIATOOL_OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "").strip() or None
+
     return AppConfig(
         workspace_root=workspace_root,
         sessions_dir=sessions_dir,
         uploads_dir=uploads_dir,
+        openai_base_url=openai_base_url,
         default_model=os.environ.get("OFFCIATOOL_DEFAULT_MODEL", "gpt-4.1"),
         summary_model=os.environ.get("OFFCIATOOL_SUMMARY_MODEL", "gpt-4.1-mini"),
         system_prompt=os.environ.get("OFFCIATOOL_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),

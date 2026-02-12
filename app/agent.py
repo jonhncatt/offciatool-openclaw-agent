@@ -22,7 +22,10 @@ _STYLE_HINTS = {
 class OfficeAgent:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        self.client = OpenAI(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=config.openai_base_url,
+        )
         self.tools = LocalToolExecutor(config)
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
