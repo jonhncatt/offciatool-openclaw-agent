@@ -166,7 +166,9 @@ class OfficeAgent:
                     "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
                     f"可访问路径根目录: {allowed_roots_text}\n"
                     "读取文件优先使用 list_directory/read_text_file；"
-                    "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。"
+                    "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
+                    "当联网抓取返回 warning（如脚本/反爬页面）时，不要给确定性结论，"
+                    "必须明确说明信息不足并建议改查权威来源。"
                 )
             )
         ]

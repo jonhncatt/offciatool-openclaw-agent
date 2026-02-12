@@ -119,6 +119,32 @@ def _extract_html_text(raw_html: str, max_chars: int) -> str:
     return out
 
 
+def _looks_like_script_payload(text: str) -> bool:
+    sample = (text or "")[:6000].lower()
+    if not sample:
+        return False
+
+    if "sourcemappingurl=" in sample:
+        return True
+
+    markers = [
+        "function(",
+        "var ",
+        "const ",
+        "let ",
+        "window.",
+        "document.",
+        "=>",
+    ]
+    hits = sum(1 for m in markers if m in sample)
+    longest_line = max((len(line) for line in sample.splitlines()), default=0)
+    punct = sum(ch in "{}[]();=<>/\\*" for ch in sample)
+    alpha = sum(ch.isalpha() for ch in sample) or 1
+    punct_ratio = punct / alpha
+
+    return (hits >= 3 and longest_line >= 220) or punct_ratio >= 0.45
+
+
 def _normalize_url_for_request(raw_url: str) -> str:
     """
     Make URL safe for urllib by encoding non-ASCII host/path/query.
@@ -528,6 +554,12 @@ class LocalToolExecutor:
                             "页面正文较少，可能是 JS 动态渲染或反爬页面。"
                             "建议改用该站点公开 API，或换一个可直读正文的页面。"
                         )
+                    if _looks_like_script_payload(extracted):
+                        script_warning = (
+                            "抓取内容疑似脚本/反爬响应，而非正文页面。"
+                            "请不要据此下结论，建议改用官方 API 或可直读页面。"
+                        )
+                        warning = f"{script_warning} {warning}" if warning else script_warning
                     if tls_warning:
                         warning = f"{tls_warning} {warning}" if warning else tls_warning
                     return {
