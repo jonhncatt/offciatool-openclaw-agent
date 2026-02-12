@@ -85,6 +85,8 @@ def chat(req: ChatRequest) -> ChatResponse:
     summarized = agent.maybe_compact_session(session, req.settings.max_context_turns)
 
     attachments = upload_store.get_many(req.attachment_ids)
+    found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
+    missing_attachment_ids = [file_id for file_id in req.attachment_ids if file_id not in found_attachment_ids]
 
     text, tool_events, attachment_note, execution_plan, execution_trace = agent.run_chat(
         history_turns=session.get("turns", []),
@@ -93,6 +95,10 @@ def chat(req: ChatRequest) -> ChatResponse:
         attachment_metas=attachments,
         settings=req.settings,
     )
+    if missing_attachment_ids:
+        execution_trace.append(
+            f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
+        )
 
     user_text = req.message.strip()
     if attachment_note:
@@ -113,6 +119,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         tool_events=tool_events,
         execution_plan=execution_plan,
         execution_trace=execution_trace,
+        missing_attachment_ids=missing_attachment_ids,
         turn_count=len(session.get("turns", [])),
         summarized=summarized,
     )

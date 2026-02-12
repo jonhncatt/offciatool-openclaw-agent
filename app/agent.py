@@ -7,7 +7,7 @@ from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
-from app.attachments import extract_document_text, image_to_data_url
+from app.attachments import extract_document_text, image_to_data_url_with_meta
 from app.config import AppConfig
 from app.local_tools import LocalToolExecutor
 from app.models import ChatSettings, ToolEvent
@@ -154,10 +154,12 @@ class OfficeAgent:
                 messages.append(self._HumanMessage(content=text))
         execution_trace.append(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
 
-        user_content, attachment_note = self._build_user_content(user_message, attachment_metas)
+        user_content, attachment_note, attachment_issues = self._build_user_content(user_message, attachment_metas)
         messages.append(self._HumanMessage(content=user_content))
         if attachment_metas:
             execution_trace.append(f"已处理 {len(attachment_metas)} 个附件输入。")
+        for issue in attachment_issues:
+            execution_trace.append(f"附件提示: {issue}")
 
         tool_events: list[ToolEvent] = []
         execution_trace.append("开始模型推理。")
@@ -318,9 +320,12 @@ class OfficeAgent:
         result = self.tools.read_text_file(path=path, max_chars=max_chars)
         return json.dumps(result, ensure_ascii=False)
 
-    def _build_user_content(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+    def _build_user_content(
+        self, user_message: str, attachment_metas: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], str, list[str]]:
         parts: list[dict[str, Any]] = [{"type": "text", "text": user_message}]
         notes: list[str] = []
+        issues: list[str] = []
 
         for meta in attachment_metas:
             name = meta.get("original_name", "file")
@@ -333,23 +338,30 @@ class OfficeAgent:
                 if extracted:
                     parts.append({"type": "text", "text": f"\n[附件文档: {name}]\n{extracted}"})
                     notes.append(f"文档:{name}")
+                    if extracted.startswith("[文档解析失败:"):
+                        issues.append(f"{name} 文档解析失败，模型只收到错误信息。")
                 else:
                     parts.append({"type": "text", "text": f"[附件文档: {name}] 该格式暂不支持解析文本。"})
                     notes.append(f"文档(未解析):{name}")
+                    issues.append(f"{name} 文档格式暂不支持解析文本。")
             elif kind == "image":
                 try:
-                    data_url = image_to_data_url(path, mime)
+                    data_url, warn = image_to_data_url_with_meta(path, mime)
                     parts.append({"type": "text", "text": f"[附件图片: {name}]"})
                     parts.append({"type": "image_url", "image_url": {"url": data_url}})
                     notes.append(f"图片:{name}")
+                    if warn:
+                        issues.append(f"{name} {warn}")
                 except Exception as exc:
                     parts.append({"type": "text", "text": f"[附件图片: {name}] 读取失败: {exc}"})
                     notes.append(f"图片(失败):{name}")
+                    issues.append(f"{name} 图片读取失败: {exc}")
             else:
                 parts.append({"type": "text", "text": f"[附件: {name}] 该类型按原样保留，建议转成 txt/pdf/docx 或图片。"})
                 notes.append(f"其他:{name}")
+                issues.append(f"{name} 附件类型暂未结构化解析。")
 
-        return parts, "；".join(notes)
+        return parts, "；".join(notes), issues
 
     def _content_to_text(self, content: Any) -> str:
         if isinstance(content, str):

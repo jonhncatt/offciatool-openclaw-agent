@@ -32,6 +32,7 @@ class ChatResponse(BaseModel):
     tool_events: list[ToolEvent] = Field(default_factory=list)
     execution_plan: list[str] = Field(default_factory=list)
     execution_trace: list[str] = Field(default_factory=list)
+    missing_attachment_ids: list[str] = Field(default_factory=list)
     turn_count: int
     summarized: bool = False
 

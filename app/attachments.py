@@ -89,17 +89,33 @@ def _heic_to_jpeg_bytes(path: Path) -> bytes:
         ) from exc
 
 
-def image_to_data_url(path: str, mime: str) -> str:
+def image_to_data_url_with_meta(path: str, mime: str) -> tuple[str, str | None]:
+    """
+    Returns (data_url, warning). For HEIC, fallback to original HEIC payload
+    when local conversion is unavailable, so capable gateways can still consume it.
+    """
     file_path = Path(path)
     suffix = file_path.suffix.lower()
     raw: bytes
     out_mime = mime
+    warning: str | None = None
 
-    if suffix in {".heic", ".heif"} or mime in {"image/heic", "image/heif"}:
-        raw = _heic_to_jpeg_bytes(file_path)
-        out_mime = "image/jpeg"
+    is_heic = suffix in {".heic", ".heif"} or mime in {"image/heic", "image/heif"}
+    if is_heic:
+        try:
+            raw = _heic_to_jpeg_bytes(file_path)
+            out_mime = "image/jpeg"
+        except Exception:
+            raw = file_path.read_bytes()
+            out_mime = mime if mime.startswith("image/") else "image/heic"
+            warning = "HEIC 未本地转码，已原始上传；若网关不支持 HEIC，请先转 JPG/PNG。"
     else:
         raw = file_path.read_bytes()
 
     encoded = base64.b64encode(raw).decode("ascii")
-    return f"data:{out_mime};base64,{encoded}"
+    return f"data:{out_mime};base64,{encoded}", warning
+
+
+def image_to_data_url(path: str, mime: str) -> str:
+    data_url, _ = image_to_data_url_with_meta(path, mime)
+    return data_url

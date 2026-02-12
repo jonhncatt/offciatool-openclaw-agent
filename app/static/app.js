@@ -138,6 +138,7 @@ async function sendMessage() {
   }
 
   addBubble("user", message);
+  addBubble("system", "执行中:\n1. 生成执行计划\n2. 加载历史和附件\n3. 调用模型并按需执行工具");
   messageInput.value = "";
   sendBtn.disabled = true;
   state.sending = true;
@@ -167,6 +168,13 @@ async function sendMessage() {
 
     if (data.summarized) {
       addBubble("system", "历史上下文已自动压缩摘要，避免窗口过长。", null);
+    }
+    if (Array.isArray(data.missing_attachment_ids) && data.missing_attachment_ids.length) {
+      addBubble(
+        "system",
+        `有 ${data.missing_attachment_ids.length} 个附件未找到，请重新上传后重试。\nIDs: ${data.missing_attachment_ids.join(", ")}`,
+        null
+      );
     }
 
     const planText = formatNumberedLines("执行计划", data.execution_plan || []);
