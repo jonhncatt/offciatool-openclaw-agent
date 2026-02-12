@@ -91,7 +91,7 @@ class OfficeAgent:
         if len(turns) <= self.config.summary_trigger_turns:
             return False
 
-        keep = max(2, min(40, keep_last_turns))
+        keep = max(2, min(200, keep_last_turns))
         older = turns[:-keep]
         recent = turns[-keep:]
         if not older:

@@ -232,23 +232,27 @@ def load_config() -> AppConfig:
         openai_ca_cert_path=openai_ca_cert_path,
         openai_temperature=openai_temperature,
         openai_use_responses_api=openai_use_responses_api,
-        default_model=_env("OFFICETOOL_DEFAULT_MODEL", "OFFCIATOOL_DEFAULT_MODEL", default="gpt-4.1") or "gpt-4.1",
+        default_model=(
+            _env("OFFICETOOL_DEFAULT_MODEL", "OFFCIATOOL_DEFAULT_MODEL", default="gpt-5.1-chat") or "gpt-5.1-chat"
+        ),
         summary_model=(
             _env(
                 "OFFICETOOL_SUMMARY_MODEL",
                 "OFFICETOOL_SUMMARY_MODE",
                 "OFFCIATOOL_SUMMARY_MODEL",
                 "OFFCIATOOL_SUMMARY_MODE",
-                default="gpt-4.1-mini",
+                default="gpt-5.1-chat",
             )
-            or "gpt-4.1-mini"
+            or "gpt-5.1-chat"
         ),
         system_prompt=_env("OFFICETOOL_SYSTEM_PROMPT", "OFFCIATOOL_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
         or DEFAULT_SYSTEM_PROMPT,
         summary_trigger_turns=int(
             _env("OFFICETOOL_SUMMARY_TRIGGER_TURNS", "OFFCIATOOL_SUMMARY_TRIGGER_TURNS", default="24") or "24"
         ),
-        max_context_turns=int(_env("OFFICETOOL_MAX_CONTEXT_TURNS", "OFFCIATOOL_MAX_CONTEXT_TURNS", default="12") or "12"),
+        max_context_turns=int(
+            _env("OFFICETOOL_MAX_CONTEXT_TURNS", "OFFCIATOOL_MAX_CONTEXT_TURNS", default="100") or "100"
+        ),
         max_attachment_chars=int(
             _env("OFFICETOOL_MAX_ATTACHMENT_CHARS", "OFFCIATOOL_MAX_ATTACHMENT_CHARS", default="24000") or "24000"
         ),

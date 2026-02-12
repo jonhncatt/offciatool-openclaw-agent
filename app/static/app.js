@@ -153,8 +153,8 @@ async function handleFiles(files) {
 function getSettings() {
   return {
     model: modelInput.value.trim() || null,
-    max_output_tokens: Number(tokenInput.value || 3200),
-    max_context_turns: Number(ctxInput.value || 16),
+    max_output_tokens: Number(tokenInput.value || 32000),
+    max_context_turns: Number(ctxInput.value || 100),
     enable_tools: toolInput.checked,
     response_style: styleInput.value,
   };
@@ -294,7 +294,7 @@ if (clearStatsBtn) {
   try {
     const health = await fetch("/api/health").then((r) => r.json());
     addBubble("system", `服务已启动，默认模型：${health.model_default}`);
-    modelInput.placeholder = health.model_default || "gpt-4.1";
+    modelInput.placeholder = health.model_default || "gpt-5.1-chat";
     await refreshTokenStatsFromServer();
   } catch {
     addBubble("system", "健康检查失败，请确认后端已运行。", null);

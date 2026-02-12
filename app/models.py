@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 
 class ChatSettings(BaseModel):
     model: str | None = None
-    max_output_tokens: int = Field(default=3200, ge=120, le=12000)
-    max_context_turns: int = Field(default=16, ge=2, le=40)
+    max_output_tokens: int = Field(default=32000, ge=120, le=64000)
+    max_context_turns: int = Field(default=100, ge=2, le=200)
     enable_tools: bool = True
     response_style: Literal["short", "normal", "long"] = "normal"
 
