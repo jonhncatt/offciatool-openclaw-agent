@@ -50,6 +50,17 @@ static_dir = (Path(__file__).resolve().parent / "static").resolve()
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
+@app.middleware("http")
+async def disable_static_cache(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(str(static_dir / "index.html"))
