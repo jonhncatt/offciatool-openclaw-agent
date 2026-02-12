@@ -86,7 +86,7 @@ def chat(req: ChatRequest) -> ChatResponse:
 
     attachments = upload_store.get_many(req.attachment_ids)
 
-    text, tool_events, attachment_note = agent.run_chat(
+    text, tool_events, attachment_note, execution_plan, execution_trace = agent.run_chat(
         history_turns=session.get("turns", []),
         summary=session.get("summary", ""),
         user_message=req.message,
@@ -111,6 +111,8 @@ def chat(req: ChatRequest) -> ChatResponse:
         session_id=session["id"],
         text=text,
         tool_events=tool_events,
+        execution_plan=execution_plan,
+        execution_trace=execution_trace,
         turn_count=len(session.get("turns", [])),
         summarized=summarized,
     )

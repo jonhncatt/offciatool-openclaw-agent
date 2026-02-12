@@ -44,6 +44,12 @@ function addBubble(role, text, tools = null) {
   chatList.scrollTop = chatList.scrollHeight;
 }
 
+function formatNumberedLines(title, items) {
+  if (!Array.isArray(items) || !items.length) return null;
+  const lines = items.map((item, idx) => `${idx + 1}. ${item}`);
+  return `${title}\n${lines.join("\n")}`;
+}
+
 function refreshSession() {
   sessionIdView.textContent = state.sessionId || "(未创建)";
 }
@@ -161,6 +167,16 @@ async function sendMessage() {
 
     if (data.summarized) {
       addBubble("system", "历史上下文已自动压缩摘要，避免窗口过长。", null);
+    }
+
+    const planText = formatNumberedLines("执行计划", data.execution_plan || []);
+    if (planText) {
+      addBubble("system", planText, null);
+    }
+
+    const traceText = formatNumberedLines("执行轨迹", data.execution_trace || []);
+    if (traceText) {
+      addBubble("system", traceText, null);
     }
 
     addBubble("assistant", data.text, data.tool_events || []);

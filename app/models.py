@@ -30,6 +30,8 @@ class ChatResponse(BaseModel):
     session_id: str
     text: str
     tool_events: list[ToolEvent] = Field(default_factory=list)
+    execution_plan: list[str] = Field(default_factory=list)
+    execution_trace: list[str] = Field(default_factory=list)
     turn_count: int
     summarized: bool = False
 

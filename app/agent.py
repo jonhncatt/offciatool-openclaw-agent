@@ -129,9 +129,11 @@ class OfficeAgent:
         user_message: str,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
-    ) -> tuple[str, list[ToolEvent], str]:
+    ) -> tuple[str, list[ToolEvent], str, list[str], list[str]]:
         model = settings.model or self.config.default_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
+        execution_plan = self._build_execution_plan(attachment_metas=attachment_metas, settings=settings)
+        execution_trace: list[str] = []
 
         messages: list[Any] = [
             self._SystemMessage(content=f"{self.config.system_prompt}\n\n输出风格: {style_hint}")
@@ -139,6 +141,7 @@ class OfficeAgent:
 
         if summary.strip():
             messages.append(self._SystemMessage(content=f"历史摘要:\n{summary}"))
+            execution_trace.append("已加载历史摘要，减少上下文占用。")
 
         for turn in history_turns[-settings.max_context_turns :]:
             role = turn.get("role", "user")
@@ -149,11 +152,15 @@ class OfficeAgent:
                 messages.append(self._AIMessage(content=text))
             else:
                 messages.append(self._HumanMessage(content=text))
+        execution_trace.append(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
 
         user_content, attachment_note = self._build_user_content(user_message, attachment_metas)
         messages.append(self._HumanMessage(content=user_content))
+        if attachment_metas:
+            execution_trace.append(f"已处理 {len(attachment_metas)} 个附件输入。")
 
         tool_events: list[ToolEvent] = []
+        execution_trace.append("开始模型推理。")
 
         try:
             ai_msg, runner = self._invoke_chat_with_runner(
@@ -163,7 +170,8 @@ class OfficeAgent:
                 enable_tools=settings.enable_tools,
             )
         except Exception as exc:
-            return f"请求模型失败: {exc}", tool_events, attachment_note
+            execution_trace.append(f"模型请求失败: {exc}")
+            return f"请求模型失败: {exc}", tool_events, attachment_note, execution_plan, execution_trace
 
         for _ in range(6):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
@@ -179,6 +187,7 @@ class OfficeAgent:
 
                 result = self.tools.execute(name, arguments)
                 result_json = json.dumps(result, ensure_ascii=False)
+                execution_trace.append(f"执行工具: {name}")
 
                 tool_events.append(
                     ToolEvent(
@@ -200,12 +209,24 @@ class OfficeAgent:
             try:
                 ai_msg = runner.invoke(messages)
             except Exception as exc:
-                return f"工具执行后续推理失败: {exc}", tool_events, attachment_note
+                execution_trace.append(f"工具后续推理失败: {exc}")
+                return f"工具执行后续推理失败: {exc}", tool_events, attachment_note, execution_plan, execution_trace
 
         text = self._content_to_text(getattr(ai_msg, "content", ""))
         if not text.strip():
             text = "模型未返回可见文本。"
-        return text, tool_events, attachment_note
+        execution_trace.append("已生成最终答复。")
+        return text, tool_events, attachment_note, execution_plan, execution_trace
+
+    def _build_execution_plan(self, attachment_metas: list[dict[str, Any]], settings: ChatSettings) -> list[str]:
+        plan = ["理解你的目标和约束。"]
+        if attachment_metas:
+            plan.append(f"解析附件内容（{len(attachment_metas)} 个）。")
+        plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
+        if settings.enable_tools:
+            plan.append("如有必要调用本地工具（读文件/列目录/执行命令）获取事实。")
+        plan.append("汇总结论并按你选择的回答长度输出。")
+        return plan
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
         selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
