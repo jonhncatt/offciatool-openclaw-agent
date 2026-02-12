@@ -86,6 +86,8 @@ class AppConfig:
     web_allow_all_domains: bool
     web_fetch_timeout_sec: int
     web_fetch_max_chars: int
+    web_skip_tls_verify: bool
+    web_ca_cert_path: str | None
     openai_base_url: str | None
     openai_ca_cert_path: str | None
     openai_use_responses_api: bool
@@ -181,6 +183,18 @@ def load_config() -> AppConfig:
     web_fetch_max_chars = int(
         (_env("OFFICETOOL_WEB_FETCH_MAX_CHARS", "OFFCIATOOL_WEB_FETCH_MAX_CHARS", default="24000") or "24000").strip()
     )
+    web_skip_tls_verify_raw = (
+        _env("OFFICETOOL_WEB_SKIP_TLS_VERIFY", "OFFCIATOOL_WEB_SKIP_TLS_VERIFY", default="false") or "false"
+    ).strip().lower()
+    web_skip_tls_verify = web_skip_tls_verify_raw in {"1", "true", "yes", "on"}
+    web_ca_cert_path = (
+        _env(
+            "OFFICETOOL_WEB_CA_CERT_PATH",
+            "OFFCIATOOL_WEB_CA_CERT_PATH",
+            default=(openai_ca_cert_path or ""),
+        )
+        or ""
+    ).strip() or None
 
     allowed_roots: list[Path] = []
     seen: set[str] = set()
@@ -202,6 +216,8 @@ def load_config() -> AppConfig:
         web_allow_all_domains=web_allow_all_domains,
         web_fetch_timeout_sec=max(3, min(30, web_fetch_timeout_sec)),
         web_fetch_max_chars=max(2000, min(120000, web_fetch_max_chars)),
+        web_skip_tls_verify=web_skip_tls_verify,
+        web_ca_cert_path=web_ca_cert_path,
         openai_base_url=openai_base_url,
         openai_ca_cert_path=openai_ca_cert_path,
         openai_use_responses_api=openai_use_responses_api,

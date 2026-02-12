@@ -116,6 +116,7 @@ cd $HOME\Desktop\officetool
 - 可用 `OFFICETOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境；兼容旧名 `OFFCIATOOL_ALLOW_ANY_PATH`）
 - 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 - 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
+- 如遇证书链异常，可设置 `OFFICETOOL_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
 
 ### 上下文控制
 
@@ -134,6 +135,7 @@ cd $HOME\Desktop\officetool
 - 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFICETOOL_OPENAI_BASE_URL`
 - 如需公司 CA 证书，请设置：`OFFICETOOL_CA_CERT_PATH`（等价 `curl --cacert`）
 - 如需强制走 Chat Completions/tool calling 语义，请设置：`OFFICETOOL_USE_RESPONSES_API=false`
+- 如网页抓取报 `CERTIFICATE_VERIFY_FAILED`（如 basic constraints not marked critical），请设置：`OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`
 
 ## 3. 目录结构
 

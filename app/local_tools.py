@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import ssl
 import subprocess
 import urllib.error
 import urllib.parse
@@ -451,6 +452,20 @@ class LocalToolExecutor:
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(512, min(120000, max_chars, self.config.web_fetch_max_chars))
+        ssl_context: ssl.SSLContext | None = None
+        if parsed.scheme == "https":
+            if self.config.web_skip_tls_verify:
+                ssl_context = ssl._create_unverified_context()
+            elif self.config.web_ca_cert_path:
+                try:
+                    ssl_context = ssl.create_default_context(cafile=self.config.web_ca_cert_path)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "error": f"Invalid web CA cert path: {self.config.web_ca_cert_path} ({exc})",
+                    }
+            else:
+                ssl_context = ssl.create_default_context()
 
         req = urllib.request.Request(
             url=request_url,
@@ -462,7 +477,7 @@ class LocalToolExecutor:
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout_val) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_val, context=ssl_context) as resp:
                 status = getattr(resp, "status", None) or 200
                 content_type = (resp.headers.get("Content-Type") or "").lower()
                 raw = resp.read(limit + 1)
