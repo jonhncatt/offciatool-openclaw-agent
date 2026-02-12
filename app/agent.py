@@ -141,10 +141,21 @@ class OfficeAgent:
         execution_plan = self._build_execution_plan(attachment_metas=attachment_metas, settings=settings)
         execution_trace: list[str] = []
         usage_total = self._empty_usage()
+        allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
 
         messages: list[Any] = [
-            self._SystemMessage(content=f"{self.config.system_prompt}\n\n输出风格: {style_hint}")
+            self._SystemMessage(
+                content=(
+                    f"{self.config.system_prompt}\n\n"
+                    f"输出风格: {style_hint}\n"
+                    "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
+                    f"可访问路径根目录: {allowed_roots_text}\n"
+                    "文件读取优先使用 list_directory/read_text_file，尽量使用绝对路径。"
+                )
+            )
         ]
+        execution_trace.append(f"工具开关: {'开启' if settings.enable_tools else '关闭'}。")
+        execution_trace.append(f"可访问根目录: {allowed_roots_text}")
 
         if summary.strip():
             messages.append(self._SystemMessage(content=f"历史摘要:\n{summary}"))

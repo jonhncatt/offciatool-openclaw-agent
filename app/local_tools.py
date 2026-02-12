@@ -16,22 +16,70 @@ def _is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
-def _resolve_workspace_path(config: AppConfig, raw_path: str) -> Path:
-    path = Path(raw_path)
-    if not path.is_absolute():
-        path = config.workspace_root / path
-    path = path.resolve()
+def _build_path_candidates(config: AppConfig, raw_path: str) -> list[Path]:
+    raw = (raw_path or ".").strip() or "."
+    path = Path(raw).expanduser()
+    seen: set[str] = set()
+    candidates: list[Path] = []
 
+    def add(p: Path) -> None:
+        resolved = p.resolve()
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(resolved)
+
+    if path.is_absolute():
+        add(path)
+        return candidates
+
+    add(config.workspace_root / path)
+    for root in config.allowed_roots:
+        if root == config.workspace_root:
+            continue
+        add(root / path)
+
+    normalized = raw.replace("\\", "/").strip("/").lower()
+    if normalized:
+        for root in config.allowed_roots:
+            root_norm = str(root).replace("\\", "/").rstrip("/").lower()
+            if normalized == root_norm or normalized == root.name.lower():
+                add(root)
+
+    return candidates
+
+
+def _resolve_workspace_path(config: AppConfig, raw_path: str) -> Path:
     if config.allow_any_path:
+        path = Path((raw_path or ".").strip() or ".").expanduser()
+        if not path.is_absolute():
+            path = config.workspace_root / path
+        path = path.resolve()
         return path
 
+    candidates = _build_path_candidates(config, raw_path)
+
+    # Prefer existing paths in allowed roots for better UX with relative inputs.
+    for path in candidates:
+        for root in config.allowed_roots:
+            if _is_within(path, root) and path.exists():
+                return path
+
+    # Fall back to first allowed candidate even if it does not exist,
+    # so upper layers can return a clear "not found" error.
+    for path in candidates:
+        for root in config.allowed_roots:
+            if _is_within(path, root):
+                return path
+
     for root in config.allowed_roots:
-        if _is_within(path, root):
-            return path
+        for path in candidates:
+            if _is_within(path, root):
+                return path
 
     allowed = ", ".join(str(p) for p in config.allowed_roots)
     raise ValueError(f"Path out of allowed roots: {raw_path}. Allowed roots: {allowed}")
-    return path
 
 
 def _truncate_output(text: str, max_chars: int = 12000) -> str:

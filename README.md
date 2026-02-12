@@ -82,6 +82,12 @@ cd $HOME\Desktop\officetool
 .\.venv\Scripts\python.exe -c "from app.config import load_config; c=load_config(); print(c.allowed_roots)"
 ```
 
+如果助手仍说“只能看当前目录”，先确认：
+
+- 左侧 `启用本地工具执行` 已勾选
+- 提问时带绝对路径（示例：`请列出 C:/Users/<YOU>/Desktop/workbench`）
+- 看“执行轨迹”是否出现 `执行工具: list_directory` / `read_text_file`
+
 ## 2. 功能说明
 
 ### 图片/文档
