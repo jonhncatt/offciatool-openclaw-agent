@@ -16,6 +16,13 @@ def _split_paths(raw: str) -> list[str]:
     return [item.strip() for item in merged.split(os.pathsep) if item.strip()]
 
 
+def _env(*keys: str, default: str | None = None) -> str | None:
+    for key in keys:
+        if key in os.environ:
+            return os.environ.get(key)
+    return default
+
+
 @dataclass(slots=True)
 class AppConfig:
     workspace_root: Path
@@ -49,39 +56,78 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 def load_config() -> AppConfig:
-    workspace_root = Path(os.environ.get("OFFCIATOOL_WORKSPACE_ROOT", os.getcwd())).resolve()
-    sessions_dir = Path(os.environ.get("OFFCIATOOL_SESSIONS_DIR", workspace_root / "app" / "data" / "sessions")).resolve()
-    uploads_dir = Path(os.environ.get("OFFCIATOOL_UPLOADS_DIR", workspace_root / "app" / "data" / "uploads")).resolve()
+    workspace_root = Path(_env("OFFICETOOL_WORKSPACE_ROOT", "OFFCIATOOL_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
+    sessions_dir = Path(
+        _env(
+            "OFFICETOOL_SESSIONS_DIR",
+            "OFFCIATOOL_SESSIONS_DIR",
+            default=str(workspace_root / "app" / "data" / "sessions"),
+        )
+        or str(workspace_root / "app" / "data" / "sessions")
+    ).resolve()
+    uploads_dir = Path(
+        _env(
+            "OFFICETOOL_UPLOADS_DIR",
+            "OFFCIATOOL_UPLOADS_DIR",
+            default=str(workspace_root / "app" / "data" / "uploads"),
+        )
+        or str(workspace_root / "app" / "data" / "uploads")
+    ).resolve()
     token_stats_path = Path(
-        os.environ.get("OFFCIATOOL_TOKEN_STATS_PATH", workspace_root / "app" / "data" / "token_stats.json")
+        _env(
+            "OFFICETOOL_TOKEN_STATS_PATH",
+            "OFFCIATOOL_TOKEN_STATS_PATH",
+            default=str(workspace_root / "app" / "data" / "token_stats.json"),
+        )
+        or str(workspace_root / "app" / "data" / "token_stats.json")
     ).resolve()
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir.mkdir(parents=True, exist_ok=True)
     token_stats_path.parent.mkdir(parents=True, exist_ok=True)
 
-    allowed_commands_raw = os.environ.get(
+    allowed_commands_raw = _env(
+        "OFFICETOOL_ALLOWED_COMMANDS",
         "OFFCIATOOL_ALLOWED_COMMANDS",
-        "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
-    )
+        default="pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv",
+    ) or "pwd,ls,cat,rg,head,tail,wc,find,echo,date,python3,git,npm,node,pytest,sed,awk,mkdir,touch,cp,mv"
 
-    openai_base_url = (os.environ.get("OFFCIATOOL_OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "").strip() or None
-    openai_ca_cert_path = (
-        os.environ.get("OFFCIATOOL_CA_CERT_PATH")
-        or os.environ.get("SSL_CERT_FILE")
-        or ""
+    openai_base_url = (
+        _env("OFFICETOOL_OPENAI_BASE_URL", "OFFCIATOOL_OPENAI_BASE_URL", "OPENAI_BASE_URL", default="") or ""
     ).strip() or None
-    use_responses_raw = (os.environ.get("OFFCIATOOL_USE_RESPONSES_API") or "false").strip().lower()
+    openai_ca_cert_path = (
+        _env("OFFICETOOL_CA_CERT_PATH", "OFFCIATOOL_CA_CERT_PATH", "SSL_CERT_FILE", default="") or ""
+    ).strip() or None
+
+    use_responses_raw = (
+        _env("OFFICETOOL_USE_RESPONSES_API", "OFFCIATOOL_USE_RESPONSES_API", default="false") or "false"
+    ).strip().lower()
     openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
-    allow_any_raw = (os.environ.get("OFFCIATOOL_ALLOW_ANY_PATH") or "false").strip().lower()
+
+    allow_any_raw = (_env("OFFICETOOL_ALLOW_ANY_PATH", "OFFCIATOOL_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
     allow_any_path = allow_any_raw in {"1", "true", "yes", "on"}
-    extra_allowed_roots_raw = os.environ.get("OFFCIATOOL_EXTRA_ALLOWED_ROOTS", "").strip()
+
+    default_workbench_root = str((Path.home() / "Desktop" / "workbench").resolve())
+    extra_allowed_roots_raw = (
+        _env(
+            "OFFICETOOL_EXTRA_ALLOWED_ROOTS",
+            "OFFCIATOOL_EXTRA_ALLOWED_ROOTS",
+            default=default_workbench_root,
+        )
+        or ""
+    ).strip()
     extra_allowed_roots = [Path(item).resolve() for item in _split_paths(extra_allowed_roots_raw)]
-    web_domains_raw = os.environ.get("OFFCIATOOL_WEB_ALLOWED_DOMAINS", "").strip()
+
+    web_domains_raw = (_env("OFFICETOOL_WEB_ALLOWED_DOMAINS", "OFFCIATOOL_WEB_ALLOWED_DOMAINS", default="") or "").strip()
     web_allowed_domains = _split_csv(web_domains_raw)
     web_allow_all_domains = len(web_allowed_domains) == 0
-    web_fetch_timeout_sec = int(os.environ.get("OFFCIATOOL_WEB_FETCH_TIMEOUT_SEC", "12"))
-    web_fetch_max_chars = int(os.environ.get("OFFCIATOOL_WEB_FETCH_MAX_CHARS", "24000"))
+
+    web_fetch_timeout_sec = int(
+        (_env("OFFICETOOL_WEB_FETCH_TIMEOUT_SEC", "OFFCIATOOL_WEB_FETCH_TIMEOUT_SEC", default="12") or "12").strip()
+    )
+    web_fetch_max_chars = int(
+        (_env("OFFICETOOL_WEB_FETCH_MAX_CHARS", "OFFCIATOOL_WEB_FETCH_MAX_CHARS", default="24000") or "24000").strip()
+    )
 
     allowed_roots: list[Path] = []
     seen: set[str] = set()
@@ -106,12 +152,17 @@ def load_config() -> AppConfig:
         openai_base_url=openai_base_url,
         openai_ca_cert_path=openai_ca_cert_path,
         openai_use_responses_api=openai_use_responses_api,
-        default_model=os.environ.get("OFFCIATOOL_DEFAULT_MODEL", "gpt-4.1"),
-        summary_model=os.environ.get("OFFCIATOOL_SUMMARY_MODEL", "gpt-4.1-mini"),
-        system_prompt=os.environ.get("OFFCIATOOL_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
-        summary_trigger_turns=int(os.environ.get("OFFCIATOOL_SUMMARY_TRIGGER_TURNS", "24")),
-        max_context_turns=int(os.environ.get("OFFCIATOOL_MAX_CONTEXT_TURNS", "12")),
-        max_attachment_chars=int(os.environ.get("OFFCIATOOL_MAX_ATTACHMENT_CHARS", "24000")),
-        max_upload_mb=int(os.environ.get("OFFCIATOOL_MAX_UPLOAD_MB", "20")),
+        default_model=_env("OFFICETOOL_DEFAULT_MODEL", "OFFCIATOOL_DEFAULT_MODEL", default="gpt-4.1") or "gpt-4.1",
+        summary_model=_env("OFFICETOOL_SUMMARY_MODEL", "OFFCIATOOL_SUMMARY_MODEL", default="gpt-4.1-mini") or "gpt-4.1-mini",
+        system_prompt=_env("OFFICETOOL_SYSTEM_PROMPT", "OFFCIATOOL_SYSTEM_PROMPT", default=DEFAULT_SYSTEM_PROMPT)
+        or DEFAULT_SYSTEM_PROMPT,
+        summary_trigger_turns=int(
+            _env("OFFICETOOL_SUMMARY_TRIGGER_TURNS", "OFFCIATOOL_SUMMARY_TRIGGER_TURNS", default="24") or "24"
+        ),
+        max_context_turns=int(_env("OFFICETOOL_MAX_CONTEXT_TURNS", "OFFCIATOOL_MAX_CONTEXT_TURNS", default="12") or "12"),
+        max_attachment_chars=int(
+            _env("OFFICETOOL_MAX_ATTACHMENT_CHARS", "OFFCIATOOL_MAX_ATTACHMENT_CHARS", default="24000") or "24000"
+        ),
+        max_upload_mb=int(_env("OFFICETOOL_MAX_UPLOAD_MB", "OFFCIATOOL_MAX_UPLOAD_MB", default="20") or "20"),
         allowed_commands=_split_csv(allowed_commands_raw),
     )

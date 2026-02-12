@@ -36,7 +36,7 @@ def get_agent() -> OfficeAgent:
         _agent = OfficeAgent(config)
     return _agent
 
-app = FastAPI(title="Offciatool", version="0.1.0")
+app = FastAPI(title="Officetool", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,4 +1,4 @@
-# Offciatool (Office Agent)
+# Officetool (Office Agent)
 
 一个可在办公室高频使用的本地 Agent 工具，核心能力：
 
@@ -15,14 +15,14 @@
 ## 1. 快速启动
 
 ```bash
-cd /Users/dalizhou/Desktop/offciatool
+cd /Users/dalizhou/Desktop/officetool
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填入 OPENAI_API_KEY
-# 如需接公司网关，再填 OFFCIATOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
-# 如需内部根证书，再填 OFFCIATOOL_CA_CERT_PATH=/absolute/path/to/your-root-ca.cer
+# 如需接公司网关，再填 OFFICETOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
+# 如需内部根证书，再填 OFFICETOOL_CA_CERT_PATH=/absolute/path/to/your-root-ca.cer
 export $(grep -v '^#' .env | xargs)
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
@@ -35,8 +35,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 ```powershell
 cd $HOME\Desktop
-git clone https://github.com/jonhncatt/offciatool.git
-cd .\offciatool
+git clone https://github.com/jonhncatt/offciatool.git officetool
+cd .\officetool
 git checkout codex/office-agent
 
 py -3.11 -m venv .venv
@@ -47,11 +47,11 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 $env:OPENAI_API_KEY = "<YOUR_API_KEY>"
-$env:OFFCIATOOL_OPENAI_BASE_URL = "https://<YOUR_COMPANY_API_BASE>/v1"
-$env:OFFCIATOOL_CA_CERT_PATH = "C:\path\to\KIOXIAInternalRootCA.cer"
-$env:OFFCIATOOL_USE_RESPONSES_API = "false"
-$env:OFFCIATOOL_EXTRA_ALLOWED_ROOTS = "C:\Users\<YOU>\Desktop;D:\work"
-$env:OFFCIATOOL_WEB_ALLOWED_DOMAINS = "openai.com,github.com,docs.python.org"
+$env:OFFICETOOL_OPENAI_BASE_URL = "https://<YOUR_COMPANY_API_BASE>/v1"
+$env:OFFICETOOL_CA_CERT_PATH = "C:\path\to\KIOXIAInternalRootCA.cer"
+$env:OFFICETOOL_USE_RESPONSES_API = "false"
+$env:OFFICETOOL_EXTRA_ALLOWED_ROOTS = "C:\Users\<YOU>\Desktop\workbench"
+# 联网不限制域名：保持 OFFICETOOL_WEB_ALLOWED_DOMAINS 为空/不设置
 
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
@@ -60,8 +60,8 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 ```bat
 cd %USERPROFILE%\Desktop
-git clone https://github.com/jonhncatt/offciatool.git
-cd offciatool
+git clone https://github.com/jonhncatt/offciatool.git officetool
+cd officetool
 git checkout codex/office-agent
 
 py -3.11 -m venv .venv
@@ -71,11 +71,11 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 set OPENAI_API_KEY=<YOUR_API_KEY>
-set OFFCIATOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
-set OFFCIATOOL_CA_CERT_PATH=C:\path\to\KIOXIAInternalRootCA.cer
-set OFFCIATOOL_USE_RESPONSES_API=false
-set OFFCIATOOL_EXTRA_ALLOWED_ROOTS=C:\Users\<YOU>\Desktop;D:\work
-set OFFCIATOOL_WEB_ALLOWED_DOMAINS=openai.com,github.com,docs.python.org
+set OFFICETOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
+set OFFICETOOL_CA_CERT_PATH=C:\path\to\KIOXIAInternalRootCA.cer
+set OFFICETOOL_USE_RESPONSES_API=false
+set OFFICETOOL_EXTRA_ALLOWED_ROOTS=C:\Users\<YOU>\Desktop\workbench
+rem 联网不限制域名：不要设置 OFFICETOOL_WEB_ALLOWED_DOMAINS
 
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
@@ -85,7 +85,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 首次配置完成后，后续每天只需要下面几步：
 
 ```powershell
-cd $HOME\Desktop\offciatool
+cd $HOME\Desktop\officetool
 git pull
 .\.venv\Scripts\Activate.ps1
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
@@ -95,11 +95,11 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 ```powershell
 setx OPENAI_API_KEY "<YOUR_API_KEY>"
-setx OFFCIATOOL_OPENAI_BASE_URL "https://<YOUR_COMPANY_API_BASE>/v1"
-setx OFFCIATOOL_CA_CERT_PATH "C:\path\to\KIOXIAInternalRootCA.cer"
-setx OFFCIATOOL_USE_RESPONSES_API "false"
-setx OFFCIATOOL_EXTRA_ALLOWED_ROOTS "C:\Users\<YOU>\Desktop;D:\work"
-setx OFFCIATOOL_WEB_ALLOWED_DOMAINS "openai.com,github.com,docs.python.org"
+setx OFFICETOOL_OPENAI_BASE_URL "https://<YOUR_COMPANY_API_BASE>/v1"
+setx OFFICETOOL_CA_CERT_PATH "C:\path\to\KIOXIAInternalRootCA.cer"
+setx OFFICETOOL_USE_RESPONSES_API "false"
+setx OFFICETOOL_EXTRA_ALLOWED_ROOTS "C:\Users\<YOU>\Desktop\workbench"
+# 联网不限制域名：不要设置 OFFICETOOL_WEB_ALLOWED_DOMAINS
 ```
 
 ## 2. 功能说明
@@ -123,10 +123,10 @@ setx OFFCIATOOL_WEB_ALLOWED_DOMAINS "openai.com,github.com,docs.python.org"
 
 安全约束：
 
-- 命令白名单（`OFFCIATOOL_ALLOWED_COMMANDS`）
-- 路径默认只能在 workspace 根目录内；可用 `OFFCIATOOL_EXTRA_ALLOWED_ROOTS` 扩展
-- 可用 `OFFCIATOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境）
-- 联网抓取可用 `OFFCIATOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
+- 命令白名单（`OFFICETOOL_ALLOWED_COMMANDS`）
+- 路径默认只能在 workspace 根目录内；可用 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 扩展
+- 可用 `OFFICETOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境）
+- 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 
 ### 上下文控制
 
@@ -142,9 +142,9 @@ setx OFFCIATOOL_WEB_ALLOWED_DOMAINS "openai.com,github.com,docs.python.org"
 ### API 地址配置
 
 - 默认直接访问 OpenAI 官方地址
-- 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFCIATOOL_OPENAI_BASE_URL`
-- 如需公司 CA 证书，请设置：`OFFCIATOOL_CA_CERT_PATH`（等价 `curl --cacert`）
-- 如需强制走 Chat Completions/tool calling 语义，请设置：`OFFCIATOOL_USE_RESPONSES_API=false`
+- 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFICETOOL_OPENAI_BASE_URL`
+- 如需公司 CA 证书，请设置：`OFFICETOOL_CA_CERT_PATH`（等价 `curl --cacert`）
+- 如需强制走 Chat Completions/tool calling 语义，请设置：`OFFICETOOL_USE_RESPONSES_API=false`
 
 ## 3. 目录结构
 

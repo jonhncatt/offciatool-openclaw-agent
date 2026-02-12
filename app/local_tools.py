@@ -234,7 +234,7 @@ class LocalToolExecutor:
         req = urllib.request.Request(
             url=url,
             headers={
-                "User-Agent": "OffciatoolAgent/1.0 (+https://github.com/jonhncatt/offciatool)",
+                "User-Agent": "OfficetoolAgent/1.0",
                 "Accept": "text/html,application/json,text/plain,application/xml;q=0.9,*/*;q=0.5",
             },
             method="GET",
