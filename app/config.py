@@ -29,6 +29,13 @@ def _strip_optional_quotes(value: str) -> str:
     return value
 
 
+def _should_dotenv_override(key: str) -> bool:
+    normalized = key.strip().upper()
+    if normalized.startswith("OFFICETOOL_") or normalized.startswith("OFFCIATOOL_"):
+        return True
+    return normalized in {"OPENAI_API_KEY", "OPENAI_BASE_URL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"}
+
+
 def _load_dotenv_if_present() -> None:
     candidates = [
         (Path.cwd() / ".env").resolve(),
@@ -61,7 +68,10 @@ def _load_dotenv_if_present() -> None:
             if " #" in env_value:
                 env_value = env_value.split(" #", 1)[0].rstrip()
 
-            os.environ.setdefault(env_key, env_value)
+            if _should_dotenv_override(env_key):
+                os.environ[env_key] = env_value
+            else:
+                os.environ.setdefault(env_key, env_value)
 
 
 @dataclass(slots=True)

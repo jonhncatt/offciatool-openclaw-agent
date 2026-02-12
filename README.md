@@ -75,6 +75,13 @@ git pull
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
+检查 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 是否生效：
+
+```powershell
+cd $HOME\Desktop\officetool
+.\.venv\Scripts\python.exe -c "from app.config import load_config; c=load_config(); print(c.allowed_roots)"
+```
+
 ## 2. 功能说明
 
 ### 图片/文档
