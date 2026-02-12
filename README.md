@@ -3,7 +3,7 @@
 一个可在办公室高频使用的本地 Agent 工具，核心能力：
 
 - 对话 + 上传图片/文档（支持拖拽）
-- 可选本地工具执行（白名单命令）
+- 可选本地工具执行（读写文件、白名单命令、联网抓取）
 - 会话自动摘要压缩，避免上下文无限增长
 - 页面显示“执行轨迹”，可见每次调用实际做了什么
 - 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
@@ -100,11 +100,13 @@ cd $HOME\Desktop\officetool
 
 ### Agent 工具调用
 
-默认开放 4 个工具：
+默认开放 6 个工具：
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
 - `read_text_file`: 读文本文件
+- `write_text_file`: 新建/覆盖写文本文件
+- `replace_in_file`: 按目标文本做替换（支持一次或多次）
 - `fetch_web`: 联网抓取网页/JSON 文本
 
 安全约束：
@@ -113,6 +115,7 @@ cd $HOME\Desktop\officetool
 - 路径默认只能在 workspace 根目录内；可用 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 扩展
 - 可用 `OFFICETOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境；兼容旧名 `OFFCIATOOL_ALLOW_ANY_PATH`）
 - 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
+- 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
 
 ### 上下文控制
 

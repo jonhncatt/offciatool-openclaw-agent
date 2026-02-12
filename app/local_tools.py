@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +90,34 @@ def _truncate_output(text: str, max_chars: int = 12000) -> str:
     return f"{text[:max_chars]}\n\n[output truncated: {len(text)} chars]"
 
 
+def _looks_like_html(content_type: str, text: str) -> bool:
+    lower_ct = (content_type or "").lower()
+    if "text/html" in lower_ct or "application/xhtml+xml" in lower_ct:
+        return True
+    head = text[:400].lower()
+    return "<html" in head or "<!doctype html" in head
+
+
+def _extract_html_text(raw_html: str, max_chars: int) -> str:
+    html = re.sub(r"(?is)<!--.*?-->", " ", raw_html)
+    html = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", " ", html)
+    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+    html = re.sub(r"(?i)</(p|div|li|tr|h1|h2|h3|h4|h5|h6|section|article)>", "\n", html)
+    html = re.sub(r"(?s)<[^>]+>", " ", html)
+    html = unescape(html)
+
+    lines: list[str] = []
+    for line in html.splitlines():
+        normalized = re.sub(r"\s+", " ", line).strip()
+        if normalized:
+            lines.append(normalized)
+
+    out = "\n".join(lines)
+    if len(out) > max_chars:
+        out = out[:max_chars]
+    return out
+
+
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -139,6 +169,39 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "write_text_file",
+                "description": "Create or overwrite a UTF-8 text file in workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "overwrite": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "replace_in_file",
+                "description": "Replace target text in a UTF-8 text file in workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "old_text": {"type": "string"},
+                        "new_text": {"type": "string"},
+                        "replace_all": {"type": "boolean", "default": False},
+                        "max_replacements": {"type": "integer", "minimum": 1, "maximum": 200, "default": 1},
+                    },
+                    "required": ["path", "old_text", "new_text"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "fetch_web",
                 "description": "Fetch web content from a URL for information lookup.",
                 "parameters": {
@@ -161,6 +224,10 @@ class LocalToolExecutor:
             return self.list_directory(**arguments)
         if name == "read_text_file":
             return self.read_text_file(**arguments)
+        if name == "write_text_file":
+            return self.write_text_file(**arguments)
+        if name == "replace_in_file":
+            return self.replace_in_file(**arguments)
         if name == "fetch_web":
             return self.fetch_web(**arguments)
         return {"ok": False, "error": f"Unknown tool: {name}"}
@@ -251,6 +318,73 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"read_text_file failed: {exc}"}
 
+    def write_text_file(
+        self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True
+    ) -> dict[str, Any]:
+        try:
+            real_path = _resolve_workspace_path(self.config, path)
+            if real_path.exists() and real_path.is_dir():
+                return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
+
+            if real_path.exists() and not overwrite:
+                return {"ok": False, "error": f"File already exists and overwrite=false: {path}"}
+
+            if not real_path.parent.exists():
+                if not create_dirs:
+                    return {"ok": False, "error": f"Parent directory not found: {real_path.parent}"}
+                real_path.parent.mkdir(parents=True, exist_ok=True)
+
+            action = "overwrite" if real_path.exists() else "create"
+            real_path.write_text(content, encoding="utf-8")
+            return {
+                "ok": True,
+                "path": str(real_path),
+                "action": action,
+                "chars": len(content),
+                "bytes_utf8": len(content.encode("utf-8")),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"write_text_file failed: {exc}"}
+
+    def replace_in_file(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        replace_all: bool = False,
+        max_replacements: int = 1,
+    ) -> dict[str, Any]:
+        if not old_text:
+            return {"ok": False, "error": "old_text cannot be empty"}
+        if max_replacements < 1:
+            return {"ok": False, "error": "max_replacements must be >= 1"}
+
+        try:
+            real_path = _resolve_workspace_path(self.config, path)
+            if not real_path.exists():
+                return {"ok": False, "error": f"Path not found: {path}"}
+            if not real_path.is_file():
+                return {"ok": False, "error": f"Not a file: {path}"}
+
+            source = real_path.read_text(encoding="utf-8", errors="ignore")
+            found = source.count(old_text)
+            if found <= 0:
+                return {"ok": False, "error": "Target text not found", "path": str(real_path)}
+
+            limit = found if replace_all else min(found, max(1, min(200, max_replacements)))
+            updated = source.replace(old_text, new_text, limit)
+            real_path.write_text(updated, encoding="utf-8")
+            return {
+                "ok": True,
+                "path": str(real_path),
+                "replacements": limit,
+                "remaining_matches": max(0, found - limit),
+                "chars": len(updated),
+                "bytes_utf8": len(updated.encode("utf-8")),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"replace_in_file failed: {exc}"}
+
     def _domain_allowed(self, host: str) -> bool:
         if self.config.web_allow_all_domains:
             return True
@@ -308,6 +442,27 @@ class LocalToolExecutor:
                     }
 
                 text = raw.decode("utf-8", errors="ignore")
+                if _looks_like_html(content_type, text):
+                    extracted = _extract_html_text(text, max_chars=limit)
+                    warning = None
+                    if len(extracted.strip()) < 80:
+                        warning = (
+                            "页面正文较少，可能是 JS 动态渲染或反爬页面。"
+                            "建议改用该站点公开 API，或换一个可直读正文的页面。"
+                        )
+                    return {
+                        "ok": True,
+                        "url": url,
+                        "status": status,
+                        "content_type": content_type,
+                        "binary": False,
+                        "truncated": truncated,
+                        "content": extracted,
+                        "length": len(extracted),
+                        "source_format": "html_text_extracted",
+                        "warning": warning,
+                    }
+
                 return {
                     "ok": True,
                     "url": url,

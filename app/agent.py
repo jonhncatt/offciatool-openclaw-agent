@@ -36,6 +36,21 @@ class ReadTextFileArgs(BaseModel):
     max_chars: int = Field(default=10000, ge=128, le=50000)
 
 
+class WriteTextFileArgs(BaseModel):
+    path: str
+    content: str
+    overwrite: bool = True
+    create_dirs: bool = True
+
+
+class ReplaceInFileArgs(BaseModel):
+    path: str
+    old_text: str
+    new_text: str
+    replace_all: bool = False
+    max_replacements: int = Field(default=1, ge=1, le=200)
+
+
 class FetchWebArgs(BaseModel):
     url: str
     max_chars: int = Field(default=24000, ge=512, le=120000)
@@ -150,7 +165,8 @@ class OfficeAgent:
                     f"输出风格: {style_hint}\n"
                     "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
                     f"可访问路径根目录: {allowed_roots_text}\n"
-                    "文件读取优先使用 list_directory/read_text_file，尽量使用绝对路径。"
+                    "读取文件优先使用 list_directory/read_text_file；"
+                    "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。"
                 )
             )
         ]
@@ -334,6 +350,18 @@ class OfficeAgent:
                 func=self._read_text_file_tool,
             ),
             self._StructuredTool.from_function(
+                name="write_text_file",
+                description="Create or overwrite a UTF-8 text file in workspace.",
+                args_schema=WriteTextFileArgs,
+                func=self._write_text_file_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="replace_in_file",
+                description="Replace target text in a UTF-8 text file in workspace.",
+                args_schema=ReplaceInFileArgs,
+                func=self._replace_in_file_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="fetch_web",
                 description="Fetch web content from a URL for information lookup.",
                 args_schema=FetchWebArgs,
@@ -351,6 +379,34 @@ class OfficeAgent:
 
     def _read_text_file_tool(self, path: str, max_chars: int = 10000) -> str:
         result = self.tools.read_text_file(path=path, max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _write_text_file_tool(
+        self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True
+    ) -> str:
+        result = self.tools.write_text_file(
+            path=path,
+            content=content,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _replace_in_file_tool(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        replace_all: bool = False,
+        max_replacements: int = 1,
+    ) -> str:
+        result = self.tools.replace_in_file(
+            path=path,
+            old_text=old_text,
+            new_text=new_text,
+            replace_all=replace_all,
+            max_replacements=max_replacements,
+        )
         return json.dumps(result, ensure_ascii=False)
 
     def _fetch_web_tool(self, url: str, max_chars: int = 24000, timeout_sec: int = 12) -> str:
