@@ -91,6 +91,12 @@ label {
   gap: 6px;
 }
 
+.field-hint {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #587162;
+}
+
 input,
 select,
 textarea,

@@ -20,11 +20,13 @@
         </label>
 
         <label>最大输出 tokens
-          <input id="tokenInput" type="number" min="120" max="4000" value="700" />
+          <input id="tokenInput" type="number" min="120" max="4000" value="1600" />
+          <span class="field-hint">单次回复最多可生成的 token 上限，不是固定输出长度。</span>
         </label>
 
-        <label>上下文轮数
-          <input id="ctxInput" type="number" min="2" max="40" value="10" />
+        <label>上下文消息条数
+          <input id="ctxInput" type="number" min="2" max="40" value="16" />
+          <span class="field-hint">只会带入最近 N 条历史消息，不是“思考 N 轮”。</span>
         </label>
 
         <label>回答长度
@@ -33,6 +35,7 @@
             <option value="normal" selected>中</option>
             <option value="long">长</option>
           </select>
+          <span class="field-hint">控制回答风格（简短/正常/详细），不是强制 token 数。</span>
         </label>
 
         <label class="row-check">
