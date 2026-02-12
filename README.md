@@ -6,6 +6,7 @@
 - 可选本地工具执行（白名单命令）
 - 会话自动摘要压缩，避免上下文无限增长
 - 可控输出长度（short/normal/long）和 token 上限
+- LLM 驱动层使用 `langchain_openai`（支持 OpenAI 兼容网关）
 
 ## 1. 快速启动
 
@@ -17,6 +18,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填入 OPENAI_API_KEY
 # 如需接公司网关，再填 OFFCIATOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
+# 如需内部根证书，再填 OFFCIATOOL_CA_CERT_PATH=/absolute/path/to/your-root-ca.cer
 export $(grep -v '^#' .env | xargs)
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
@@ -55,6 +57,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 - 默认直接访问 OpenAI 官方地址
 - 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFCIATOOL_OPENAI_BASE_URL`
+- 如需公司 CA 证书，请设置：`OFFCIATOOL_CA_CERT_PATH`（等价 `curl --cacert`）
+- 如需强制走 Chat Completions/tool calling 语义，请设置：`OFFCIATOOL_USE_RESPONSES_API=false`
 
 ## 3. 目录结构
 

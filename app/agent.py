@@ -4,11 +4,11 @@ import json
 import os
 from typing import Any
 
-from openai import OpenAI
+from pydantic import BaseModel, Field
 
 from app.attachments import extract_document_text, image_to_data_url
 from app.config import AppConfig
-from app.local_tools import LocalToolExecutor, parse_json_arguments
+from app.local_tools import LocalToolExecutor
 from app.models import ChatSettings, ToolEvent
 
 
@@ -19,14 +19,43 @@ _STYLE_HINTS = {
 }
 
 
+class RunShellArgs(BaseModel):
+    command: str = Field(description="Shell command, e.g. `ls -la` or `rg TODO .`")
+    cwd: str = Field(default=".", description="Working directory relative to workspace")
+    timeout_sec: int = Field(default=15, ge=1, le=30)
+
+
+class ListDirectoryArgs(BaseModel):
+    path: str = Field(default=".")
+    max_entries: int = Field(default=200, ge=1, le=500)
+
+
+class ReadTextFileArgs(BaseModel):
+    path: str
+    max_chars: int = Field(default=10000, ge=128, le=50000)
+
+
 class OfficeAgent:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            base_url=config.openai_base_url,
-        )
         self.tools = LocalToolExecutor(config)
+
+        try:
+            from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+            from langchain_core.tools import StructuredTool
+            from langchain_openai import ChatOpenAI
+        except Exception as exc:
+            raise RuntimeError(
+                "Missing dependency: langchain_openai. Install with `pip install langchain-openai`."
+            ) from exc
+
+        self._AIMessage = AIMessage
+        self._HumanMessage = HumanMessage
+        self._SystemMessage = SystemMessage
+        self._ToolMessage = ToolMessage
+        self._StructuredTool = StructuredTool
+        self._ChatOpenAI = ChatOpenAI
+        self._lc_tools = self._build_langchain_tools()
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
         turns = session.get("turns", [])
@@ -61,32 +90,24 @@ class OfficeAgent:
             return existing_summary
 
         try:
-            resp = self.client.responses.create(
-                model=self.config.summary_model,
-                max_output_tokens=450,
-                input=[
-                    {
-                        "role": "system",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    "你是会话摘要器。请把历史对话压缩成可供后续继续工作的摘要，"
-                                    "要保留目标、关键约束、已完成动作、未完成事项。"
-                                ),
-                            }
-                        ],
-                    },
-                    {"role": "user", "content": [{"type": "input_text", "text": raw}]},
-                ],
+            llm = self._build_llm(model=self.config.summary_model, max_output_tokens=450)
+            response = llm.invoke(
+                [
+                    self._SystemMessage(
+                        content=(
+                            "你是会话摘要器。请把历史对话压缩成可供后续继续工作的摘要，"
+                            "要保留目标、关键约束、已完成动作、未完成事项。"
+                        )
+                    ),
+                    self._HumanMessage(content=raw),
+                ]
             )
-            summarized = (resp.output_text or "").strip()
+            summarized = self._content_to_text(response.content).strip()
             if summarized:
                 return summarized
         except Exception:
             pass
 
-        # fallback when summarize call is unavailable
         lines: list[str] = []
         if existing_summary:
             lines.append(existing_summary)
@@ -108,104 +129,129 @@ class OfficeAgent:
         model = settings.model or self.config.default_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
 
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": f"{self.config.system_prompt}\n\n输出风格: {style_hint}",
-                    }
-                ],
-            }
+        messages: list[Any] = [
+            self._SystemMessage(content=f"{self.config.system_prompt}\n\n输出风格: {style_hint}")
         ]
 
         if summary.strip():
-            messages.append(
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": f"历史摘要:\n{summary}"}],
-                }
-            )
+            messages.append(self._SystemMessage(content=f"历史摘要:\n{summary}"))
 
         for turn in history_turns[-settings.max_context_turns :]:
             role = turn.get("role", "user")
             text = (turn.get("text") or "").strip()
             if not text:
                 continue
-            messages.append(
-                {
-                    "role": role if role in {"user", "assistant"} else "user",
-                    "content": [{"type": "input_text", "text": text}],
-                }
-            )
+            if role == "assistant":
+                messages.append(self._AIMessage(content=text))
+            else:
+                messages.append(self._HumanMessage(content=text))
 
-        user_parts, attachment_note = self._build_user_parts(user_message, attachment_metas)
-        messages.append({"role": "user", "content": user_parts})
+        user_content, attachment_note = self._build_user_content(user_message, attachment_metas)
+        messages.append(self._HumanMessage(content=user_content))
 
-        tools = self.tools.tool_specs if settings.enable_tools else []
         tool_events: list[ToolEvent] = []
 
         try:
-            response = self.client.responses.create(
-                model=model,
-                input=messages,
-                tools=tools,
-                max_output_tokens=settings.max_output_tokens,
-            )
+            llm = self._build_llm(model=model, max_output_tokens=settings.max_output_tokens)
+            runner = llm.bind_tools(self._lc_tools) if settings.enable_tools else llm
+            ai_msg = runner.invoke(messages)
         except Exception as exc:
             return f"请求模型失败: {exc}", tool_events, attachment_note
 
         for _ in range(6):
-            calls = self._extract_function_calls(response)
-            if not calls:
+            tool_calls = getattr(ai_msg, "tool_calls", None) or []
+            if not settings.enable_tools or not tool_calls:
                 break
 
-            tool_outputs = []
-            for call in calls:
+            messages.append(ai_msg)
+            for call in tool_calls:
                 name = call.get("name") or "unknown"
-                arguments = parse_json_arguments(call.get("arguments"))
+                arguments = call.get("args") or {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+
                 result = self.tools.execute(name, arguments)
-                preview = json.dumps(result, ensure_ascii=False)
+                result_json = json.dumps(result, ensure_ascii=False)
+
                 tool_events.append(
                     ToolEvent(
                         name=name,
                         input=arguments,
-                        output_preview=preview[:1200],
+                        output_preview=result_json[:1200],
                     )
                 )
 
-                call_id = call.get("call_id") or call.get("id")
-                if call_id:
-                    tool_outputs.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": call_id,
-                            "output": json.dumps(result, ensure_ascii=False),
-                        }
+                call_id = call.get("id") or f"call_{len(tool_events)}"
+                messages.append(
+                    self._ToolMessage(
+                        content=result_json,
+                        tool_call_id=call_id,
+                        name=name,
                     )
-
-            if not tool_outputs:
-                break
+                )
 
             try:
-                response = self.client.responses.create(
-                    model=model,
-                    previous_response_id=response.id,
-                    input=tool_outputs,
-                    tools=tools,
-                    max_output_tokens=settings.max_output_tokens,
-                )
+                ai_msg = runner.invoke(messages)
             except Exception as exc:
                 return f"工具执行后续推理失败: {exc}", tool_events, attachment_note
 
-        text = self._extract_text(response)
+        text = self._content_to_text(getattr(ai_msg, "content", ""))
         if not text.strip():
             text = "模型未返回可见文本。"
         return text, tool_events, attachment_note
 
-    def _build_user_parts(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
-        parts: list[dict[str, Any]] = [{"type": "input_text", "text": user_message}]
+    def _build_llm(self, model: str, max_output_tokens: int):
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "api_key": os.environ.get("OPENAI_API_KEY"),
+            "max_tokens": max_output_tokens,
+            "temperature": 0,
+            "use_responses_api": self.config.openai_use_responses_api,
+        }
+        if self.config.openai_base_url:
+            kwargs["base_url"] = self.config.openai_base_url
+        if self.config.openai_ca_cert_path:
+            # Keep TLS behavior close to curl --cacert for corporate gateways.
+            os.environ.setdefault("SSL_CERT_FILE", self.config.openai_ca_cert_path)
+            os.environ.setdefault("REQUESTS_CA_BUNDLE", self.config.openai_ca_cert_path)
+        return self._ChatOpenAI(**kwargs)
+
+    def _build_langchain_tools(self) -> list[Any]:
+        return [
+            self._StructuredTool.from_function(
+                name="run_shell",
+                description="Run a safe shell command in workspace. Supports simple commands without pipes.",
+                args_schema=RunShellArgs,
+                func=self._run_shell_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="list_directory",
+                description="List files in a workspace directory.",
+                args_schema=ListDirectoryArgs,
+                func=self._list_directory_tool,
+            ),
+            self._StructuredTool.from_function(
+                name="read_text_file",
+                description="Read a UTF-8 text file in workspace.",
+                args_schema=ReadTextFileArgs,
+                func=self._read_text_file_tool,
+            ),
+        ]
+
+    def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
+        result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _list_directory_tool(self, path: str = ".", max_entries: int = 200) -> str:
+        result = self.tools.list_directory(path=path, max_entries=max_entries)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _read_text_file_tool(self, path: str, max_chars: int = 10000) -> str:
+        result = self.tools.read_text_file(path=path, max_chars=max_chars)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _build_user_content(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+        parts: list[dict[str, Any]] = [{"type": "text", "text": user_message}]
         notes: list[str] = []
 
         for meta in attachment_metas:
@@ -217,89 +263,44 @@ class OfficeAgent:
             if kind == "document":
                 extracted = extract_document_text(path, self.config.max_attachment_chars)
                 if extracted:
-                    parts.append(
-                        {
-                            "type": "input_text",
-                            "text": f"\n[附件文档: {name}]\n{extracted}",
-                        }
-                    )
+                    parts.append({"type": "text", "text": f"\n[附件文档: {name}]\n{extracted}"})
                     notes.append(f"文档:{name}")
                 else:
-                    parts.append(
-                        {
-                            "type": "input_text",
-                            "text": f"[附件文档: {name}] 该格式暂不支持解析文本。",
-                        }
-                    )
+                    parts.append({"type": "text", "text": f"[附件文档: {name}] 该格式暂不支持解析文本。"})
                     notes.append(f"文档(未解析):{name}")
             elif kind == "image":
                 try:
                     data_url = image_to_data_url(path, mime)
-                    parts.append({"type": "input_text", "text": f"[附件图片: {name}]"})
-                    parts.append({"type": "input_image", "image_url": data_url})
+                    parts.append({"type": "text", "text": f"[附件图片: {name}]"})
+                    parts.append({"type": "image_url", "image_url": {"url": data_url}})
                     notes.append(f"图片:{name}")
                 except Exception as exc:
-                    parts.append(
-                        {
-                            "type": "input_text",
-                            "text": f"[附件图片: {name}] 读取失败: {exc}",
-                        }
-                    )
+                    parts.append({"type": "text", "text": f"[附件图片: {name}] 读取失败: {exc}"})
                     notes.append(f"图片(失败):{name}")
             else:
-                parts.append(
-                    {
-                        "type": "input_text",
-                        "text": f"[附件: {name}] 该类型按原样保留，建议转成 txt/pdf/docx 或图片。",
-                    }
-                )
+                parts.append({"type": "text", "text": f"[附件: {name}] 该类型按原样保留，建议转成 txt/pdf/docx 或图片。"})
                 notes.append(f"其他:{name}")
 
-        note = "；".join(notes)
-        return parts, note
+        return parts, "；".join(notes)
 
-    def _extract_text(self, response: Any) -> str:
-        output_text = getattr(response, "output_text", "")
-        if output_text:
-            return str(output_text)
+    def _content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content or "")
 
-        dumped = self._safe_dump(response)
         out: list[str] = []
-        for item in dumped.get("output", []):
-            if item.get("type") == "message":
-                for content in item.get("content", []):
-                    ctype = content.get("type")
-                    if ctype in {"output_text", "text", "input_text"}:
-                        text = content.get("text") or ""
-                        if text:
-                            out.append(text)
-        return "\n".join(out).strip()
+        for item in content:
+            if isinstance(item, str):
+                out.append(item)
+                continue
+            if not isinstance(item, dict):
+                out.append(str(item))
+                continue
 
-    def _extract_function_calls(self, response: Any) -> list[dict[str, Any]]:
-        dumped = self._safe_dump(response)
-        calls: list[dict[str, Any]] = []
-
-        for item in dumped.get("output", []):
             item_type = item.get("type")
-            if item_type == "function_call":
-                calls.append(item)
-            elif item_type == "tool_call" and isinstance(item.get("function"), dict):
-                function = item["function"]
-                calls.append(
-                    {
-                        "name": function.get("name"),
-                        "arguments": function.get("arguments"),
-                        "call_id": item.get("call_id") or item.get("id"),
-                    }
-                )
-        return calls
-
-    def _safe_dump(self, response: Any) -> dict[str, Any]:
-        if hasattr(response, "model_dump"):
-            try:
-                return response.model_dump()
-            except Exception:
-                pass
-        if isinstance(response, dict):
-            return response
-        return {}
+            if item_type in {"text", "output_text", "input_text"}:
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    out.append(text)
+        return "\n".join(out).strip()

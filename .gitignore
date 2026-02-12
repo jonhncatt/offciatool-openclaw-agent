@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .env
+output/
+tmp/
 app/data/sessions/*
 !app/data/sessions/.gitkeep
 app/data/uploads/*

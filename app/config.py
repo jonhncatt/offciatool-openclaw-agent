@@ -15,6 +15,8 @@ class AppConfig:
     sessions_dir: Path
     uploads_dir: Path
     openai_base_url: str | None
+    openai_ca_cert_path: str | None
+    openai_use_responses_api: bool
     default_model: str
     summary_model: str
     system_prompt: str
@@ -46,12 +48,21 @@ def load_config() -> AppConfig:
     )
 
     openai_base_url = (os.environ.get("OFFCIATOOL_OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or "").strip() or None
+    openai_ca_cert_path = (
+        os.environ.get("OFFCIATOOL_CA_CERT_PATH")
+        or os.environ.get("SSL_CERT_FILE")
+        or ""
+    ).strip() or None
+    use_responses_raw = (os.environ.get("OFFCIATOOL_USE_RESPONSES_API") or "false").strip().lower()
+    openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
 
     return AppConfig(
         workspace_root=workspace_root,
         sessions_dir=sessions_dir,
         uploads_dir=uploads_dir,
         openai_base_url=openai_base_url,
+        openai_ca_cert_path=openai_ca_cert_path,
+        openai_use_responses_api=openai_use_responses_api,
         default_model=os.environ.get("OFFCIATOOL_DEFAULT_MODEL", "gpt-4.1"),
         summary_model=os.environ.get("OFFCIATOOL_SUMMARY_MODEL", "gpt-4.1-mini"),
         system_prompt=os.environ.get("OFFCIATOOL_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
