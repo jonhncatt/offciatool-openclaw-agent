@@ -195,7 +195,7 @@ button.secondary {
 }
 
 .bubble.system {
-  align-self: center;
+  align-self: flex-start;
   max-width: 100%;
   background: #fff8ef;
   border: 1px solid #eac99c;

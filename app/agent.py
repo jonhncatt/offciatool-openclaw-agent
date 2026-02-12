@@ -7,7 +7,7 @@ from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
-from app.attachments import extract_document_text, image_to_data_url_with_meta
+from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig
 from app.local_tools import LocalToolExecutor
 from app.models import ChatSettings, ToolEvent
@@ -341,9 +341,22 @@ class OfficeAgent:
                     if extracted.startswith("[文档解析失败:"):
                         issues.append(f"{name} 文档解析失败，模型只收到错误信息。")
                 else:
-                    parts.append({"type": "text", "text": f"[附件文档: {name}] 该格式暂不支持解析文本。"})
-                    notes.append(f"文档(未解析):{name}")
-                    issues.append(f"{name} 文档格式暂不支持解析文本。")
+                    try:
+                        preview = summarize_file_payload(path, max_bytes=768, max_text_chars=1200)
+                        parts.append(
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"[附件文档: {name}] 未识别为结构化文本，已附带文件预览。\n{preview}"
+                                ),
+                            }
+                        )
+                        notes.append(f"文档(预览):{name}")
+                        issues.append(f"{name} 未结构化解析，已提供文件预览。")
+                    except Exception as exc:
+                        parts.append({"type": "text", "text": f"[附件文档: {name}] 读取失败: {exc}"})
+                        notes.append(f"文档(失败):{name}")
+                        issues.append(f"{name} 文档读取失败: {exc}")
             elif kind == "image":
                 try:
                     data_url, warn = image_to_data_url_with_meta(path, mime)
@@ -357,9 +370,20 @@ class OfficeAgent:
                     notes.append(f"图片(失败):{name}")
                     issues.append(f"{name} 图片读取失败: {exc}")
             else:
-                parts.append({"type": "text", "text": f"[附件: {name}] 该类型按原样保留，建议转成 txt/pdf/docx 或图片。"})
-                notes.append(f"其他:{name}")
-                issues.append(f"{name} 附件类型暂未结构化解析。")
+                try:
+                    preview = summarize_file_payload(path, max_bytes=768, max_text_chars=1200)
+                    parts.append(
+                        {
+                            "type": "text",
+                            "text": f"[附件: {name}] 二进制/未知类型，已附带文件预览。\n{preview}",
+                        }
+                    )
+                    notes.append(f"其他(预览):{name}")
+                    issues.append(f"{name} 附件类型未知，已提供二进制预览。")
+                except Exception as exc:
+                    parts.append({"type": "text", "text": f"[附件: {name}] 读取失败: {exc}"})
+                    notes.append(f"其他(失败):{name}")
+                    issues.append(f"{name} 附件读取失败: {exc}")
 
         return parts, "；".join(notes), issues
 

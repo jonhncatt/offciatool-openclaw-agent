@@ -119,3 +119,27 @@ def image_to_data_url_with_meta(path: str, mime: str) -> tuple[str, str | None]:
 def image_to_data_url(path: str, mime: str) -> str:
     data_url, _ = image_to_data_url_with_meta(path, mime)
     return data_url
+
+
+def summarize_file_payload(path: str, max_bytes: int = 768, max_text_chars: int = 1200) -> str:
+    file_path = Path(path)
+    raw = file_path.read_bytes()
+    head = raw[:max_bytes]
+
+    if not head:
+        return "[空文件]"
+
+    text_bytes = b"\n\r\t\b\f" + bytes(range(32, 127))
+    non_text = sum(1 for b in head if b not in text_bytes)
+    is_binary = b"\x00" in head or (non_text / len(head)) > 0.30
+
+    if not is_binary:
+        text = head.decode("utf-8", errors="ignore")
+        text = text[:max_text_chars]
+        return f"[文本预览，文件大小 {len(raw)} bytes]\\n{text}"
+
+    hex_preview = " ".join(f"{b:02x}" for b in head[:128])
+    return (
+        f"[二进制预览，文件大小 {len(raw)} bytes，前 {min(len(head),128)} bytes(hex)]\\n"
+        f"{hex_preview}"
+    )

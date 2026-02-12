@@ -109,7 +109,8 @@ async function handleFiles(files) {
       state.attachments.push(uploaded);
     }
     refreshFileList();
-    addBubble("system", `上传完成，共 ${files.length} 个文件。`);
+    const names = state.attachments.map((x) => x.name).join("，");
+    addBubble("system", `上传完成，共 ${files.length} 个文件。\n当前附件：${names}`);
   } catch (err) {
     addBubble("system", String(err));
   } finally {
@@ -138,6 +139,10 @@ async function sendMessage() {
   }
 
   addBubble("user", message);
+  if (state.attachments.length) {
+    const names = state.attachments.map((x) => x.name).join("，");
+    addBubble("system", `本轮将携带 ${state.attachments.length} 个附件：${names}`);
+  }
   addBubble("system", "执行中:\n1. 生成执行计划\n2. 加载历史和附件\n3. 调用模型并按需执行工具");
   messageInput.value = "";
   sendBtn.disabled = true;
@@ -175,6 +180,9 @@ async function sendMessage() {
         `有 ${data.missing_attachment_ids.length} 个附件未找到，请重新上传后重试。\nIDs: ${data.missing_attachment_ids.join(", ")}`,
         null
       );
+      const missing = new Set(data.missing_attachment_ids);
+      state.attachments = state.attachments.filter((x) => !missing.has(x.id));
+      refreshFileList();
     }
 
     const planText = formatNumberedLines("执行计划", data.execution_plan || []);
@@ -189,9 +197,7 @@ async function sendMessage() {
 
     addBubble("assistant", data.text, data.tool_events || []);
 
-    // 每次发送后清空附件，避免重复带入
-    state.attachments = [];
-    refreshFileList();
+    addBubble("system", "附件已保留，可继续追问；不需要时点附件上的 × 删除。");
   } catch (err) {
     addBubble("system", `请求失败: ${String(err)}`);
   } finally {
@@ -229,7 +235,7 @@ dropZone.addEventListener("drop", (e) => {
 sendBtn.addEventListener("click", sendMessage);
 
 messageInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+  if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
   }

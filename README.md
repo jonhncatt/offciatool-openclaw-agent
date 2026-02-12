@@ -9,6 +9,7 @@
 - 可控输出长度（short/normal/long）和 token 上限
 - LLM 驱动层使用 `langchain_openai`（支持 OpenAI 兼容网关）
 - 附件链路带“未找到附件”显式告警，避免只看到“上传成功”但上下文没带上
+- 输入框支持 `Enter` 直接发送，`Shift+Enter` 换行
 
 ## 1. 快速启动
 
@@ -102,6 +103,7 @@ setx OFFCIATOOL_USE_RESPONSES_API "false"
 - 支持文档：txt/md/csv/json/pdf/docx 及常见代码文本
 - 图片直接送入多模态输入；文档会先抽取文本后送入模型
 - HEIC 优先本地转码为 JPEG；若环境缺少转码依赖会回退为原始 HEIC 并给出提示
+- 对无法结构化解析的二进制/未知类型文件，会自动附带十六进制预览，确保模型“看得到文件内容”
 
 ### Agent 工具调用
 
