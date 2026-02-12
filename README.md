@@ -1,0 +1,84 @@
+# Offciatool (Office Agent)
+
+一个可在办公室高频使用的本地 Agent 工具，核心能力：
+
+- 对话 + 上传图片/文档（支持拖拽）
+- 可选本地工具执行（白名单命令）
+- 会话自动摘要压缩，避免上下文无限增长
+- 可控输出长度（short/normal/long）和 token 上限
+
+## 1. 快速启动
+
+```bash
+cd /Users/dalizhou/Desktop/offciatool
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# 编辑 .env，填入 OPENAI_API_KEY
+export $(grep -v '^#' .env | xargs)
+uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+```
+
+打开浏览器：
+
+- [http://127.0.0.1:8080](http://127.0.0.1:8080)
+
+## 2. 功能说明
+
+### 图片/文档
+
+- 支持图片：png/jpg/jpeg/webp/gif/heic/heif
+- 支持文档：txt/md/csv/json/pdf/docx 及常见代码文本
+- 图片直接送入多模态输入；文档会先抽取文本后送入模型
+
+### Agent 工具调用
+
+默认开放 3 个工具：
+
+- `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
+- `list_directory`: 列目录
+- `read_text_file`: 读文本文件
+
+安全约束：
+
+- 命令白名单（`OFFCIATOOL_ALLOWED_COMMANDS`）
+- 路径只能在 workspace 根目录内
+
+### 上下文控制
+
+- 每次请求只带最近 `max_context_turns` 轮
+- 当历史轮数超过阈值时自动摘要，保留长期记忆但压缩 tokens
+
+## 3. 目录结构
+
+```text
+app/
+  agent.py         # 模型调用 + 工具循环 + 会话摘要
+  attachments.py   # 文档抽取、图片读取
+  config.py        # 配置项
+  local_tools.py   # 本地工具执行安全层
+  main.py          # FastAPI 路由
+  models.py        # API 数据模型
+  storage.py       # 会话与上传持久化
+  static/
+    index.html
+    styles.css
+    app.js
+  data/
+    sessions/      # 会话存储（运行后生成）
+    uploads/       # 上传文件与索引（运行后生成）
+```
+
+## 4. 办公场景建议
+
+- 写日报：上传文档 + 指令“给我简版/长版日报”
+- 看图提要：把会议白板或截图拖进去，要求模型提炼行动项
+- 项目助手：打开工具执行，直接让它检查仓库状态并总结
+- 降本控长：默认 `short + 600~800 tokens + context 8~12`
+
+## 5. 注意事项
+
+- 公司内网网页登录失败不会影响本地运行。
+- 如果需要接企业 SSO，可后续在 `/api/chat` 前加鉴权中间件。
+- HEIC 支持依赖 `pillow-heif`；如果缺依赖会提示解析失败。

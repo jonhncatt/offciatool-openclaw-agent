@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Offciatool Office Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg1"></div>
+    <div class="bg-shape bg2"></div>
+
+    <main class="app-shell">
+      <aside class="panel">
+        <h1>Offciatool</h1>
+        <p class="hint">办公室用 Agent，支持图片/文档和本地工具执行。</p>
+
+        <label>模型
+          <input id="modelInput" type="text" placeholder="gpt-4.1" />
+        </label>
+
+        <label>最大输出 tokens
+          <input id="tokenInput" type="number" min="120" max="4000" value="700" />
+        </label>
+
+        <label>上下文轮数
+          <input id="ctxInput" type="number" min="2" max="40" value="10" />
+        </label>
+
+        <label>回答长度
+          <select id="styleInput">
+            <option value="short">短</option>
+            <option value="normal" selected>中</option>
+            <option value="long">长</option>
+          </select>
+        </label>
+
+        <label class="row-check">
+          <input id="toolInput" type="checkbox" checked />
+          启用本地工具执行
+        </label>
+
+        <button id="newSessionBtn" class="secondary">新建会话</button>
+
+        <div class="session-box">
+          <div class="session-title">Session ID</div>
+          <code id="sessionIdView">(未创建)</code>
+        </div>
+      </aside>
+
+      <section class="chat-wrap">
+        <div id="chatList" class="chat-list"></div>
+
+        <div class="composer">
+          <div id="dropZone" class="drop-zone">
+            <input id="fileInput" type="file" multiple />
+            <span>拖拽或点击上传图片/文档</span>
+          </div>
+          <div id="fileList" class="file-list"></div>
+
+          <textarea id="messageInput" placeholder="输入你的任务，例如：整理这份文档要点、比较两张图里的差异、然后帮我执行本地命令检查项目状态。"></textarea>
+
+          <div class="action-row">
+            <button id="sendBtn">发送</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
