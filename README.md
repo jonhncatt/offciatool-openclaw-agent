@@ -23,13 +23,13 @@ cp .env.example .env
 # 编辑 .env，填入 OPENAI_API_KEY
 # 如需接公司网关，再填 OFFICETOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
 # 如需内部根证书，再填 OFFICETOOL_CA_CERT_PATH=/absolute/path/to/your-root-ca.cer
-export $(grep -v '^#' .env | xargs)
 uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 打开浏览器：
 
 - [http://127.0.0.1:8080](http://127.0.0.1:8080)
+- 说明：应用会自动读取项目根目录 `.env`，无需再手动 `export` 或 `setx`
 
 ### Windows 启动（PowerShell）
 
@@ -40,20 +40,12 @@ cd .\officetool
 git checkout codex/office-agent
 
 py -3.11 -m venv .venv
-# 如果激活报策略限制，先执行：Set-ExecutionPolicy -Scope Process Bypass
-.\.venv\Scripts\Activate.ps1
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+# 编辑 .env（填 OPENAI_API_KEY；需要的话再填公司网关和 CA）
 
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-$env:OPENAI_API_KEY = "<YOUR_API_KEY>"
-$env:OFFICETOOL_OPENAI_BASE_URL = "https://<YOUR_COMPANY_API_BASE>/v1"
-$env:OFFICETOOL_CA_CERT_PATH = "C:\path\to\KIOXIAInternalRootCA.cer"
-$env:OFFICETOOL_USE_RESPONSES_API = "false"
-$env:OFFICETOOL_EXTRA_ALLOWED_ROOTS = "C:\Users\<YOU>\Desktop\workbench"
-# 联网不限制域名：保持 OFFICETOOL_WEB_ALLOWED_DOMAINS 为空/不设置
-
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 ### Windows 启动（CMD）
@@ -65,19 +57,12 @@ cd officetool
 git checkout codex/office-agent
 
 py -3.11 -m venv .venv
-call .venv\Scripts\activate.bat
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env
+rem 编辑 .env（填 OPENAI_API_KEY；需要的话再填公司网关和 CA）
 
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-set OPENAI_API_KEY=<YOUR_API_KEY>
-set OFFICETOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
-set OFFICETOOL_CA_CERT_PATH=C:\path\to\KIOXIAInternalRootCA.cer
-set OFFICETOOL_USE_RESPONSES_API=false
-set OFFICETOOL_EXTRA_ALLOWED_ROOTS=C:\Users\<YOU>\Desktop\workbench
-rem 联网不限制域名：不要设置 OFFICETOOL_WEB_ALLOWED_DOMAINS
-
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 ### Windows 日常启动（后续每次）
@@ -87,27 +72,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```powershell
 cd $HOME\Desktop\officetool
 git pull
-.\start_windows.ps1
-```
-
-说明：
-
-- `start_windows.ps1` 会自动读取项目根目录 `.env`
-- `start_windows.ps1` 会自动激活 `.venv` 并启动服务
-- 可选参数示例：`.\start_windows.ps1 -Port 8081 -NoReload`
-
-如果你不想用 `.env`，也可以把变量做成长期生效（仅需一次）：
-
-```powershell
-setx OPENAI_API_KEY "<YOUR_API_KEY>"
-setx OFFICETOOL_OPENAI_BASE_URL "https://<YOUR_COMPANY_API_BASE>/v1"
-setx OFFICETOOL_CA_CERT_PATH "C:\path\to\KIOXIAInternalRootCA.cer"
-setx OFFICETOOL_USE_RESPONSES_API "false"
-setx OFFICETOOL_EXTRA_ALLOWED_ROOTS "C:\Users\<YOU>\Desktop\workbench"
-setx OFFICETOOL_ALLOW_ANY_PATH "false"
-# 兼容旧变量名（二选一即可）
-# setx OFFCIATOOL_ALLOW_ANY_PATH "false"
-# 联网不限制域名：不要设置 OFFICETOOL_WEB_ALLOWED_DOMAINS
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 ## 2. 功能说明

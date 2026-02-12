@@ -23,6 +23,47 @@ def _env(*keys: str, default: str | None = None) -> str | None:
     return default
 
 
+def _strip_optional_quotes(value: str) -> str:
+    if len(value) >= 2 and ((value[0] == '"' and value[-1] == '"') or (value[0] == "'" and value[-1] == "'")):
+        return value[1:-1]
+    return value
+
+
+def _load_dotenv_if_present() -> None:
+    candidates = [
+        (Path.cwd() / ".env").resolve(),
+        (Path(__file__).resolve().parent.parent / ".env").resolve(),
+    ]
+
+    seen: set[str] = set()
+    for dotenv_path in candidates:
+        key = str(dotenv_path)
+        if key in seen or not dotenv_path.is_file():
+            continue
+        seen.add(key)
+
+        for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+
+            env_key, env_value = line.split("=", 1)
+            env_key = env_key.strip()
+            env_value = env_value.strip()
+            if not env_key:
+                continue
+
+            env_value = _strip_optional_quotes(env_value)
+            if " #" in env_value:
+                env_value = env_value.split(" #", 1)[0].rstrip()
+
+            os.environ.setdefault(env_key, env_value)
+
+
 @dataclass(slots=True)
 class AppConfig:
     workspace_root: Path
@@ -56,6 +97,8 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 def load_config() -> AppConfig:
+    _load_dotenv_if_present()
+
     workspace_root = Path(_env("OFFICETOOL_WORKSPACE_ROOT", "OFFCIATOOL_WORKSPACE_ROOT", default=os.getcwd()) or os.getcwd()).resolve()
     sessions_dir = Path(
         _env(
