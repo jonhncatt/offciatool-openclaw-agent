@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
 
@@ -90,17 +91,20 @@ class OfficeAgent:
             return existing_summary
 
         try:
-            llm = self._build_llm(model=self.config.summary_model, max_output_tokens=450)
-            response = llm.invoke(
-                [
-                    self._SystemMessage(
-                        content=(
-                            "你是会话摘要器。请把历史对话压缩成可供后续继续工作的摘要，"
-                            "要保留目标、关键约束、已完成动作、未完成事项。"
-                        )
-                    ),
-                    self._HumanMessage(content=raw),
-                ]
+            prompt_messages = [
+                self._SystemMessage(
+                    content=(
+                        "你是会话摘要器。请把历史对话压缩成可供后续继续工作的摘要，"
+                        "要保留目标、关键约束、已完成动作、未完成事项。"
+                    )
+                ),
+                self._HumanMessage(content=raw),
+            ]
+            response = self._invoke_with_405_fallback(
+                messages=prompt_messages,
+                model=self.config.summary_model,
+                max_output_tokens=450,
+                enable_tools=False,
             )
             summarized = self._content_to_text(response.content).strip()
             if summarized:
@@ -152,9 +156,12 @@ class OfficeAgent:
         tool_events: list[ToolEvent] = []
 
         try:
-            llm = self._build_llm(model=model, max_output_tokens=settings.max_output_tokens)
-            runner = llm.bind_tools(self._lc_tools) if settings.enable_tools else llm
-            ai_msg = runner.invoke(messages)
+            ai_msg, runner = self._invoke_chat_with_runner(
+                messages=messages,
+                model=model,
+                max_output_tokens=settings.max_output_tokens,
+                enable_tools=settings.enable_tools,
+            )
         except Exception as exc:
             return f"请求模型失败: {exc}", tool_events, attachment_note
 
@@ -200,21 +207,61 @@ class OfficeAgent:
             text = "模型未返回可见文本。"
         return text, tool_events, attachment_note
 
-    def _build_llm(self, model: str, max_output_tokens: int):
+    def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
+        selected_use_responses = self.config.openai_use_responses_api if use_responses_api is None else use_responses_api
         kwargs: dict[str, Any] = {
             "model": model,
             "api_key": os.environ.get("OPENAI_API_KEY"),
             "max_tokens": max_output_tokens,
             "temperature": 0,
-            "use_responses_api": self.config.openai_use_responses_api,
+            "use_responses_api": selected_use_responses,
         }
         if self.config.openai_base_url:
-            kwargs["base_url"] = self.config.openai_base_url
+            kwargs["base_url"] = self._normalize_base_url(self.config.openai_base_url)
         if self.config.openai_ca_cert_path:
             # Keep TLS behavior close to curl --cacert for corporate gateways.
             os.environ.setdefault("SSL_CERT_FILE", self.config.openai_ca_cert_path)
             os.environ.setdefault("REQUESTS_CA_BUNDLE", self.config.openai_ca_cert_path)
         return self._ChatOpenAI(**kwargs)
+
+    def _invoke_chat_with_runner(
+        self,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+    ) -> tuple[Any, Any]:
+        llm = self._build_llm(model=model, max_output_tokens=max_output_tokens)
+        runner = llm.bind_tools(self._lc_tools) if enable_tools else llm
+        try:
+            return runner.invoke(messages), runner
+        except Exception as exc:
+            if not self._is_405_error(exc):
+                raise
+
+        fallback_use_responses = not self.config.openai_use_responses_api
+        llm_fb = self._build_llm(
+            model=model,
+            max_output_tokens=max_output_tokens,
+            use_responses_api=fallback_use_responses,
+        )
+        runner_fb = llm_fb.bind_tools(self._lc_tools) if enable_tools else llm_fb
+        return runner_fb.invoke(messages), runner_fb
+
+    def _invoke_with_405_fallback(
+        self,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+    ) -> Any:
+        response, _ = self._invoke_chat_with_runner(
+            messages=messages,
+            model=model,
+            max_output_tokens=max_output_tokens,
+            enable_tools=enable_tools,
+        )
+        return response
 
     def _build_langchain_tools(self) -> list[Any]:
         return [
@@ -304,3 +351,23 @@ class OfficeAgent:
                 if isinstance(text, str) and text:
                     out.append(text)
         return "\n".join(out).strip()
+
+    def _normalize_base_url(self, raw_url: str) -> str:
+        """
+        Accept either base URL (..../v1) or full endpoint URL (..../v1/chat/completions).
+        """
+        url = raw_url.strip().strip("\"'").rstrip("/")
+        parsed = urlparse(url)
+        path = parsed.path or ""
+        suffixes = ["/chat/completions", "/responses", "/v1/chat/completions", "/v1/responses"]
+        lowered = path.lower()
+        for suffix in suffixes:
+            if lowered.endswith(suffix):
+                path = path[: -len(suffix)] + ("/v1" if suffix.startswith("/v1/") else "")
+                break
+        normalized = urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), parsed.params, parsed.query, parsed.fragment))
+        return normalized
+
+    def _is_405_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "405" in text or "method not allowed" in text
