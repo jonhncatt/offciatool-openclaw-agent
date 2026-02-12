@@ -19,6 +19,12 @@
           <input id="modelInput" type="text" placeholder="gpt-5.1-chat" />
         </label>
 
+        <div class="preset-row">
+          <button id="presetGeneralBtn" type="button" class="secondary">通用模式</button>
+          <button id="presetCodingBtn" type="button" class="secondary">编码模式</button>
+        </div>
+        <div id="modeStatus" class="field-hint">当前模式：通用模式</div>
+
         <label>最大输出 tokens
           <input id="tokenInput" type="number" min="120" max="64000" value="32000" />
           <span class="field-hint">单次回复最多可生成的 token 上限，不是固定输出长度。</span>

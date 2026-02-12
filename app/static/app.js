@@ -21,6 +21,55 @@ const tokenInput = document.getElementById("tokenInput");
 const ctxInput = document.getElementById("ctxInput");
 const styleInput = document.getElementById("styleInput");
 const toolInput = document.getElementById("toolInput");
+const presetGeneralBtn = document.getElementById("presetGeneralBtn");
+const presetCodingBtn = document.getElementById("presetCodingBtn");
+const modeStatus = document.getElementById("modeStatus");
+
+const MODE_PRESETS = {
+  general: {
+    label: "通用模式",
+    model: "gpt-5.1-chat",
+    maxOutputTokens: 32000,
+    maxContextTurns: 100,
+    responseStyle: "normal",
+    enableTools: true,
+  },
+  coding: {
+    label: "编码模式",
+    model: "gpt-5.1-codex-mini",
+    maxOutputTokens: 32000,
+    maxContextTurns: 120,
+    responseStyle: "normal",
+    enableTools: true,
+  },
+};
+
+function applyModePreset(mode, announce = true) {
+  const preset = MODE_PRESETS[mode];
+  if (!preset) return;
+
+  modelInput.value = preset.model;
+  tokenInput.value = String(preset.maxOutputTokens);
+  ctxInput.value = String(preset.maxContextTurns);
+  styleInput.value = preset.responseStyle;
+  toolInput.checked = Boolean(preset.enableTools);
+
+  if (modeStatus) {
+    modeStatus.textContent = `当前模式：${preset.label}`;
+  }
+  if (presetGeneralBtn) {
+    presetGeneralBtn.classList.toggle("preset-active", mode === "general");
+  }
+  if (presetCodingBtn) {
+    presetCodingBtn.classList.toggle("preset-active", mode === "coding");
+  }
+  if (announce) {
+    addBubble(
+      "system",
+      `已切换到${preset.label}：model=${preset.model}，max_tokens=${preset.maxOutputTokens}，context=${preset.maxContextTurns}`
+    );
+  }
+}
 
 function addBubble(role, text, tools = null) {
   const bubble = document.createElement("div");
@@ -263,6 +312,14 @@ dropZone.addEventListener("drop", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
+if (presetGeneralBtn) {
+  presetGeneralBtn.addEventListener("click", () => applyModePreset("general"));
+}
+
+if (presetCodingBtn) {
+  presetCodingBtn.addEventListener("click", () => applyModePreset("coding"));
+}
+
 messageInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -291,10 +348,14 @@ if (clearStatsBtn) {
 }
 
 (async function boot() {
+  applyModePreset("general", false);
   try {
     const health = await fetch("/api/health").then((r) => r.json());
     addBubble("system", `服务已启动，默认模型：${health.model_default}`);
-    modelInput.placeholder = health.model_default || "gpt-5.1-chat";
+    modelInput.placeholder = health.model_default || MODE_PRESETS.general.model;
+    if (!modelInput.value) {
+      modelInput.value = health.model_default || MODE_PRESETS.general.model;
+    }
     await refreshTokenStatsFromServer();
   } catch {
     addBubble("system", "健康检查失败，请确认后端已运行。", null);

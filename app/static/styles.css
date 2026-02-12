@@ -145,6 +145,19 @@ button.secondary {
   border: 1px solid #c2cfbf;
 }
 
+.preset-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+button.secondary.preset-active {
+  background: #d6eadb;
+  border-color: #7baa8f;
+  color: #1d5537;
+  font-weight: 600;
+}
+
 button.small {
   padding: 6px 10px;
   font-size: 12px;
