@@ -293,6 +293,73 @@ def _looks_news_like_query(query: str) -> bool:
     return any(k in text for k in keywords)
 
 
+def _looks_baseball_query(query: str) -> bool:
+    text = (query or "").strip().lower()
+    if not text:
+        return False
+    keywords = [
+        "baseball",
+        "mlb",
+        "npb",
+        "kbo",
+        "棒球",
+        "野球",
+        "甲子園",
+        "甲子园",
+        "大谷",
+    ]
+    return any(k in text for k in keywords)
+
+
+def _build_rss_candidates(query: str) -> list[tuple[str, str]]:
+    q = (query or "").strip()
+    out: list[tuple[str, str]] = []
+    is_baseball = _looks_baseball_query(q)
+
+    if is_baseball:
+        q_en = urllib.parse.quote_plus(f"{q} baseball")
+        q_ja = urllib.parse.quote_plus(f"{q} 野球")
+        out.extend(
+            [
+                ("mlb_official_rss", "https://www.mlb.com/feeds/news/rss.xml"),
+                ("espn_mlb_rss", "https://www.espn.com/espn/rss/mlb/news"),
+                ("yahoo_mlb_rss", "https://sports.yahoo.com/mlb/rss/"),
+                (
+                    "google_news_baseball_en",
+                    f"https://news.google.com/rss/search?q={q_en}&hl=en-US&gl=US&ceid=US:en",
+                ),
+                (
+                    "google_news_baseball_ja",
+                    f"https://news.google.com/rss/search?q={q_ja}&hl=ja&gl=JP&ceid=JP:ja",
+                ),
+                ("nhk_sports_rss", "https://www3.nhk.or.jp/rss/news/cat7.xml"),
+            ]
+        )
+    else:
+        quoted = urllib.parse.quote_plus(q)
+        out.append(
+            (
+                "google_news_query_zh",
+                f"https://news.google.com/rss/search?q={quoted}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+            )
+        )
+        out.append(
+            (
+                "google_news_query_en",
+                f"https://news.google.com/rss/search?q={quoted}&hl=en-US&gl=US&ceid=US:en",
+            )
+        )
+
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for name, url in out:
+        if url in seen:
+            continue
+        seen.add(url)
+        deduped.append((name, url))
+    return deduped
+
+
 def _extract_google_news_rss_results(raw_xml: str, max_results: int) -> list[dict[str, str]]:
     limit = max(1, min(20, int(max_results)))
     xml_text = (raw_xml or "").strip()
@@ -741,28 +808,31 @@ class LocalToolExecutor:
         q = (query or "").strip()
         if not q:
             return {"ok": False, "error": "query cannot be empty"}
-        ddg_allowed = self._domain_allowed("duckduckgo.com")
-        google_news_allowed = self._domain_allowed("news.google.com")
-        if not ddg_allowed and not google_news_allowed:
-            return {
-                "ok": False,
-                "error": (
-                    "Domain not allowed for search engines: duckduckgo.com/news.google.com. "
-                    f"Allowed: {', '.join(self.config.web_allowed_domains)}"
-                ),
-            }
 
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(1, min(20, int(max_results)))
         read_limit = min(500000, max(20000, self.config.web_fetch_max_chars))
+        ddg_allowed = self._domain_allowed("duckduckgo.com")
         prefer_news = _looks_news_like_query(q)
+        prefer_baseball = _looks_baseball_query(q)
+        rss_candidates = _build_rss_candidates(q)
+        rss_allowed_candidates: list[tuple[str, str]] = []
+        for name, url in rss_candidates:
+            host = (urllib.parse.urlsplit(url).hostname or "").strip().lower()
+            if host and self._domain_allowed(host):
+                rss_allowed_candidates.append((name, url))
+
+        if not ddg_allowed and not rss_allowed_candidates:
+            return {
+                "ok": False,
+                "error": (
+                    "Domain not allowed for search engines and RSS sources. "
+                    f"Allowed: {', '.join(self.config.web_allowed_domains)}"
+                ),
+            }
+
         search_url = "https://duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q)
         lite_url = "https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote_plus(q)
-        news_rss_url = (
-            "https://news.google.com/rss/search?q="
-            + urllib.parse.quote_plus(q)
-            + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
-        )
 
         if self.config.web_skip_tls_verify:
             ssl_context = ssl._create_unverified_context()
@@ -811,59 +881,132 @@ class LocalToolExecutor:
                 text = raw.decode("utf-8", errors="ignore")
                 return status, content_type, text, truncated
 
+        def _fetch_page_with_retry(target_url: str) -> tuple[int, str, str, bool]:
+            nonlocal active_context, tls_warning
+            try:
+                return _fetch_page(target_url, active_context)
+            except Exception as first_exc:
+                if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
+                    tls_warning = "TLS verify failed; search_web auto-retried with verify disabled."
+                    active_context = ssl._create_unverified_context()
+                    return _fetch_page(target_url, active_context)
+                raise
+
         try:
             results: list[dict[str, str]] = []
-            source = "duckduckgo_html"
+            source = "unknown"
             status = 200
             content_type = "text/html"
             truncated = False
             warning_parts: list[str] = []
+            seen_result_keys: set[str] = set()
 
-            if prefer_news and google_news_allowed:
-                try:
-                    status, content_type, text, truncated = _fetch_page(news_rss_url, active_context)
-                    rss_results = _extract_google_news_rss_results(text, max_results=limit)
-                    if rss_results:
-                        results = rss_results
-                        source = "google_news_rss"
-                except Exception as exc:
-                    warning_parts.append(f"Google News RSS 首轮失败: {exc}")
+            def _append_results(items: list[dict[str, str]], source_name: str) -> int:
+                added = 0
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title", "")).strip()
+                    url = str(item.get("url", "")).strip()
+                    if not title and not url:
+                        continue
+                    key = f"{title}|{url}".lower()
+                    if key in seen_result_keys:
+                        continue
+                    seen_result_keys.add(key)
+
+                    row = dict(item)
+                    row.setdefault("source", source_name)
+                    results.append(row)
+                    added += 1
+                    if len(results) >= limit:
+                        break
+                return added
+
+            if prefer_news and rss_allowed_candidates:
+                for rss_name, rss_url in rss_allowed_candidates:
+                    if len(results) >= limit:
+                        break
+                    try:
+                        status, content_type, text, truncated = _fetch_page_with_retry(rss_url)
+                        rss_results = _extract_google_news_rss_results(text, max_results=limit)
+                        if _append_results(rss_results, rss_name) > 0 and source == "unknown":
+                            source = f"rss:{rss_name}"
+                    except Exception as exc:
+                        warning_parts.append(f"{rss_name} 获取失败: {exc}")
 
             ddg_error: str | None = None
             if ddg_allowed and not results:
                 try:
-                    try:
-                        status, content_type, text, truncated = _fetch_page(search_url, active_context)
-                    except Exception as first_exc:
-                        if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
-                            tls_warning = "TLS verify failed; search_web auto-retried with verify disabled."
-                            active_context = ssl._create_unverified_context()
-                            status, content_type, text, truncated = _fetch_page(search_url, active_context)
-                        else:
-                            raise
-
-                    results = _extract_ddg_results(text, max_results=limit)
-                    source = "duckduckgo_html"
+                    status, content_type, text, truncated = _fetch_page_with_retry(search_url)
+                    ddg_results = _extract_ddg_results(text, max_results=limit)
+                    if _append_results(ddg_results, "duckduckgo_html") > 0:
+                        source = "duckduckgo_html"
                     if not results:
-                        status, content_type, text, truncated = _fetch_page(lite_url, active_context)
-                        results = _extract_ddg_results(text, max_results=limit)
-                        source = "duckduckgo_lite"
+                        status, content_type, text, truncated = _fetch_page_with_retry(lite_url)
+                        ddg_results = _extract_ddg_results(text, max_results=limit)
+                        if _append_results(ddg_results, "duckduckgo_lite") > 0:
+                            source = "duckduckgo_lite"
                 except Exception as exc:
                     ddg_error = str(exc)
 
-            warning = tls_warning
             if ddg_error:
                 warning_parts.append(f"DuckDuckGo 搜索失败: {ddg_error}")
 
-            if not results and google_news_allowed:
-                try:
-                    status, content_type, text, truncated = _fetch_page(news_rss_url, active_context)
-                    rss_results = _extract_google_news_rss_results(text, max_results=limit)
-                    if rss_results:
-                        results = rss_results
-                        source = "google_news_rss"
-                except Exception as exc:
-                    warning_parts.append(f"Google News RSS 回退失败: {exc}")
+            if not results and rss_allowed_candidates and not prefer_news:
+                for rss_name, rss_url in rss_allowed_candidates:
+                    if len(results) >= limit:
+                        break
+                    try:
+                        status, content_type, text, truncated = _fetch_page_with_retry(rss_url)
+                        rss_results = _extract_google_news_rss_results(text, max_results=limit)
+                        if _append_results(rss_results, rss_name) > 0 and source == "unknown":
+                            source = f"rss:{rss_name}"
+                    except Exception as exc:
+                        warning_parts.append(f"{rss_name} 回退失败: {exc}")
+
+            if not results and prefer_baseball:
+                curated = [
+                    {
+                        "title": "MLB News (Official)",
+                        "url": "https://www.mlb.com/news",
+                        "snippet": "Fallback source when search engines are blocked.",
+                        "source": "fallback_static",
+                    },
+                    {
+                        "title": "ESPN MLB",
+                        "url": "https://www.espn.com/mlb/",
+                        "snippet": "Fallback source when search engines are blocked.",
+                        "source": "fallback_static",
+                    },
+                    {
+                        "title": "Yahoo Sports MLB",
+                        "url": "https://sports.yahoo.com/mlb/",
+                        "snippet": "Fallback source when search engines are blocked.",
+                        "source": "fallback_static",
+                    },
+                    {
+                        "title": "NPB Official",
+                        "url": "https://npb.jp/",
+                        "snippet": "Fallback source when search engines are blocked.",
+                        "source": "fallback_static",
+                    },
+                    {
+                        "title": "Yahoo Japan NPB",
+                        "url": "https://baseball.yahoo.co.jp/npb/",
+                        "snippet": "Fallback source when search engines are blocked.",
+                        "source": "fallback_static",
+                    },
+                ]
+                for item in curated:
+                    host = (urllib.parse.urlsplit(item["url"]).hostname or "").strip().lower()
+                    if host and self._domain_allowed(host):
+                        results.append(item)
+                    if len(results) >= limit:
+                        break
+                if results:
+                    source = "fallback:baseball_static_links"
+                    warning_parts.append("实时新闻抓取受限，已回退到可访问的棒球新闻入口链接。")
 
             if not results:
                 warning_parts.append("搜索结果页解析为空，可能被网关改写或反爬。")
@@ -872,6 +1015,8 @@ class LocalToolExecutor:
                 warning_parts.insert(0, tls_warning)
 
             warning = " ".join(part.strip() for part in warning_parts if part and part.strip()) or None
+            if source == "unknown":
+                source = "none"
 
             return {
                 "ok": True,
