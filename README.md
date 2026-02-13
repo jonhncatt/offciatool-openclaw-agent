@@ -132,6 +132,7 @@ cd $HOME\Desktop\officetool
 - 每次请求只带最近 `max_context_turns` 条历史消息（不是“思考轮数”）
 - 当历史轮数超过阈值时自动摘要，保留长期记忆但压缩 tokens
 - 会话历史持久化在 `app/data/sessions/*.json`；页面刷新后会自动尝试恢复上次会话（基于浏览器本地保存的 session_id）
+- 左侧新增“历史会话”列表，可直接切换旧会话（不只保留当前会话）
 
 ### 参数解释（页面左侧）
 

@@ -14,6 +14,8 @@ const messageInput = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const newSessionBtn = document.getElementById("newSessionBtn");
 const sessionIdView = document.getElementById("sessionIdView");
+const sessionHistoryView = document.getElementById("sessionHistoryView");
+const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
 const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
 
@@ -140,35 +142,119 @@ function clearChat() {
   chatList.innerHTML = "";
 }
 
-async function restoreSessionIfPossible() {
-  const cached = getStoredSessionId();
-  if (!cached) return false;
+function formatSessionTime(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "-";
+  try {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString();
+  } catch {
+    return s;
+  }
+}
 
-  state.sessionId = cached;
+async function refreshSessionHistory() {
+  if (!sessionHistoryView) return;
+  sessionHistoryView.textContent = "加载中...";
+
+  try {
+    const res = await fetch("/api/sessions?limit=80");
+    if (!res.ok) {
+      sessionHistoryView.textContent = "历史会话加载失败";
+      return;
+    }
+    const data = await res.json();
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    sessionHistoryView.innerHTML = "";
+    if (!sessions.length) {
+      const empty = document.createElement("div");
+      empty.className = "session-history-empty";
+      empty.textContent = "暂无历史会话";
+      sessionHistoryView.appendChild(empty);
+      return;
+    }
+
+    sessions.forEach((item) => {
+      const sid = String(item?.session_id || "");
+      if (!sid) return;
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "session-history-item";
+      if (sid === state.sessionId) btn.classList.add("active");
+
+      const title = document.createElement("div");
+      title.className = "session-history-title";
+      title.textContent = String(item?.title || "新会话");
+      btn.appendChild(title);
+
+      const meta = document.createElement("div");
+      meta.className = "session-history-meta";
+      meta.textContent = `turns ${item?.turn_count || 0} · ${formatSessionTime(item?.updated_at)}`;
+      btn.appendChild(meta);
+
+      const preview = String(item?.preview || "").trim();
+      if (preview) {
+        const previewNode = document.createElement("div");
+        previewNode.className = "session-history-preview";
+        previewNode.textContent = preview;
+        btn.appendChild(previewNode);
+      }
+
+      btn.addEventListener("click", async () => {
+        await loadSessionById(sid, { announceMode: "switch" });
+      });
+      sessionHistoryView.appendChild(btn);
+    });
+  } catch {
+    sessionHistoryView.textContent = "历史会话加载失败";
+  }
+}
+
+async function loadSessionById(sessionId, { announceMode = "none" } = {}) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return false;
+
+  state.sessionId = sid;
   refreshSession();
 
   try {
-    const res = await fetch(`/api/session/${encodeURIComponent(cached)}?max_turns=120`);
+    const res = await fetch(`/api/session/${encodeURIComponent(sid)}?max_turns=120`);
     if (!res.ok) {
       if (res.status === 404) {
         state.sessionId = null;
         refreshSession();
       }
+      await refreshSessionHistory();
       return false;
     }
     const data = await res.json();
     const turns = Array.isArray(data?.turns) ? data.turns : [];
     clearChat();
-    addBubble("system", `已恢复会话：${cached}（历史 ${data?.turn_count || turns.length} 条）`);
+    if (announceMode === "restore") {
+      addBubble("system", `已恢复会话：${sid}（历史 ${data?.turn_count || turns.length} 条）`);
+    } else if (announceMode === "switch") {
+      addBubble("system", `已切换会话：${sid}（历史 ${data?.turn_count || turns.length} 条）`);
+    }
     turns.forEach((turn) => {
       const role = turn?.role === "assistant" ? "assistant" : "user";
       const text = String(turn?.text || "").trim();
       if (text) addBubble(role, text);
     });
+    await refreshTokenStatsFromServer();
+    await refreshSessionHistory();
     return true;
   } catch {
+    await refreshSessionHistory();
     return false;
   }
+}
+
+async function restoreSessionIfPossible() {
+  const cached = getStoredSessionId();
+  if (!cached) return false;
+  return loadSessionById(cached, { announceMode: "restore" });
 }
 
 function renderRunSteps(activeStepId, isError = false) {
@@ -344,6 +430,7 @@ async function createSession() {
   state.sessionId = data.session_id;
   refreshSession();
   await refreshTokenStatsFromServer();
+  await refreshSessionHistory();
 }
 
 async function uploadSingle(file) {
@@ -473,6 +560,7 @@ async function sendMessage() {
     renderLlmFlow(data.debug_flow || []);
 
     addBubble("assistant", data.text);
+    await refreshSessionHistory();
     renderTokenStats({
       last: data.token_usage || {},
       session: data.session_token_totals || {},
@@ -561,6 +649,13 @@ if (clearStatsBtn) {
   });
 }
 
+if (refreshSessionsBtn) {
+  refreshSessionsBtn.addEventListener("click", async () => {
+    await refreshSessionHistory();
+    addBubble("system", "历史会话列表已刷新。");
+  });
+}
+
 (async function boot() {
   applyModePreset("general", false);
   setRunStage("空闲", "等待发送请求", null, "idle");
@@ -581,6 +676,7 @@ if (clearStatsBtn) {
     if (!modelInput.value) {
       modelInput.value = health.model_default || MODE_PRESETS.general.model;
     }
+    await refreshSessionHistory();
     const restored = await restoreSessionIfPossible();
     if (!restored) {
       addBubble("system", `服务已启动，默认模型：${health.model_default}`);

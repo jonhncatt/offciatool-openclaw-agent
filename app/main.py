@@ -17,6 +17,8 @@ from app.models import (
     HealthResponse,
     NewSessionResponse,
     SessionDetailResponse,
+    SessionListItem,
+    SessionListResponse,
     SessionTurn,
     TokenStatsResponse,
     TokenTotals,
@@ -108,6 +110,12 @@ def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
         turn_count=len(turns_raw),
         turns=turns,
     )
+
+
+@app.get("/api/sessions", response_model=SessionListResponse)
+def list_sessions(limit: int = 50) -> SessionListResponse:
+    rows = session_store.list_sessions(limit=limit)
+    return SessionListResponse(sessions=[SessionListItem(**row) for row in rows])
 
 
 @app.post("/api/upload", response_model=UploadResponse)

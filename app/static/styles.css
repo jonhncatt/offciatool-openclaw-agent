@@ -177,6 +177,64 @@ button.small {
   margin-bottom: 4px;
 }
 
+.session-history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.session-history-list {
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+
+.session-history-empty {
+  font-size: 11px;
+  color: #62786a;
+}
+
+.session-history-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #d0dbcd;
+  background: #f5f9f4;
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: #274032;
+  display: grid;
+  gap: 3px;
+}
+
+.session-history-item:hover {
+  border-color: #9cbca7;
+  background: #edf6ef;
+}
+
+.session-history-item.active {
+  border-color: #7caa8f;
+  background: #e2f0e7;
+}
+
+.session-history-title {
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+.session-history-meta {
+  font-size: 10px;
+  color: #5a705f;
+}
+
+.session-history-preview {
+  font-size: 11px;
+  color: #395645;
+  line-height: 1.25;
+}
+
 .stats-view {
   margin: 6px 0 0;
   font-family: ui-monospace, Menlo, Consolas, monospace;

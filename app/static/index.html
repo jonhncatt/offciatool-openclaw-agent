@@ -61,6 +61,14 @@
         </div>
 
         <div class="session-box">
+          <div class="session-history-head">
+            <div class="session-title">历史会话</div>
+            <button id="refreshSessionsBtn" class="secondary small" type="button">刷新</button>
+          </div>
+          <div id="sessionHistoryView" class="session-history-list">加载中...</div>
+        </div>
+
+        <div class="session-box">
           <div class="session-title">Token 统计（累计，除非清除）</div>
           <pre id="tokenStatsView" class="stats-view">请求: 0
 说明: 输入=你发给模型的 tokens，输出=模型回复的 tokens

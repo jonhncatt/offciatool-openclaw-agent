@@ -72,6 +72,56 @@ class SessionStore:
             }
         )
 
+    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+        max_items = max(1, min(500, int(limit)))
+        files = sorted(
+            self.sessions_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        out: list[dict[str, Any]] = []
+        for path in files:
+            if len(out) >= max_items:
+                break
+            try:
+                with self._lock:
+                    session = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            sid = str(session.get("id") or path.stem)
+            turns = session.get("turns", [])
+            if not isinstance(turns, list):
+                turns = []
+
+            title = "新会话"
+            for turn in turns:
+                if isinstance(turn, dict) and str(turn.get("role") or "") == "user":
+                    text = str(turn.get("text") or "").strip()
+                    if text:
+                        title = text.replace("\n", " ")[:48]
+                    break
+
+            preview = ""
+            if turns:
+                last = turns[-1]
+                if isinstance(last, dict):
+                    preview = str(last.get("text") or "").replace("\n", " ").strip()[:80]
+
+            out.append(
+                {
+                    "session_id": sid,
+                    "title": title,
+                    "preview": preview,
+                    "turn_count": len(turns),
+                    "updated_at": str(session.get("updated_at") or ""),
+                    "created_at": str(session.get("created_at") or ""),
+                }
+            )
+
+        return out
+
 
 class UploadStore:
     def __init__(self, uploads_dir: Path) -> None:

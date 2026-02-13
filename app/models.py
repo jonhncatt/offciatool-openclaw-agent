@@ -94,6 +94,19 @@ class SessionDetailResponse(BaseModel):
     turns: list[SessionTurn] = Field(default_factory=list)
 
 
+class SessionListItem(BaseModel):
+    session_id: str
+    title: str = ""
+    preview: str = ""
+    turn_count: int = 0
+    updated_at: str = ""
+    created_at: str = ""
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionListItem] = Field(default_factory=list)
+
+
 class HealthResponse(BaseModel):
     ok: bool
     model_default: str
