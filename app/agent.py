@@ -82,6 +82,15 @@ class FetchWebArgs(BaseModel):
     timeout_sec: int = Field(default=12, ge=3, le=30)
 
 
+class DownloadWebFileArgs(BaseModel):
+    url: str
+    dst_path: str = Field(default="", description="Destination path. Empty means auto-save to downloads/<filename>.")
+    overwrite: bool = True
+    create_dirs: bool = True
+    timeout_sec: int = Field(default=20, ge=3, le=120)
+    max_bytes: int = Field(default=52428800, ge=1024, le=209715200)
+
+
 class SearchWebArgs(BaseModel):
     query: str
     max_results: int = Field(default=5, ge=1, le=20)
@@ -215,6 +224,8 @@ class OfficeAgent:
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
                     "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
+                    "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
+                    "fetch_web 遇到 PDF 会尝试抽取正文文本；若用户要求原文件落盘，必须用 download_web_file。\n"
                     "除非用户明确指定网址，不要反复要求用户先给 URL。\n"
                     "对新闻/实时信息类问题，若第一次搜索结果不足，先自动改写 query 并重试最多 2 次，"
                     "再决定是否向用户补充提问。\n"
@@ -592,6 +603,12 @@ class OfficeAgent:
                 func=self._fetch_web_tool,
             ),
             self._StructuredTool.from_function(
+                name="download_web_file",
+                description="Download and save a web file (binary-safe), e.g. PDF/ZIP/images.",
+                args_schema=DownloadWebFileArgs,
+                func=self._download_web_file_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="search_web",
                 description="Search web by query and return candidate URLs/snippets before fetch_web.",
                 args_schema=SearchWebArgs,
@@ -652,6 +669,25 @@ class OfficeAgent:
 
     def _fetch_web_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
         result = self.tools.fetch_web(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _download_web_file_tool(
+        self,
+        url: str,
+        dst_path: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        timeout_sec: int = 20,
+        max_bytes: int = 52428800,
+    ) -> str:
+        result = self.tools.download_web_file(
+            url=url,
+            dst_path=dst_path,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            timeout_sec=timeout_sec,
+            max_bytes=max_bytes,
+        )
         return json.dumps(result, ensure_ascii=False)
 
     def _search_web_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:

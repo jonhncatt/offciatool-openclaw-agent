@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import re
 import shlex
@@ -437,6 +438,60 @@ def _is_cert_verify_error(exc: Exception) -> bool:
     return "certificate_verify_failed" in text or "certificate verify failed" in text
 
 
+def _extract_pdf_text_from_bytes(raw_pdf: bytes, max_chars: int) -> str:
+    from pypdf import PdfReader  # lazy import
+
+    reader = PdfReader(io.BytesIO(raw_pdf))
+    chunks: list[str] = []
+    total = 0
+    limit = max(512, int(max_chars))
+    for idx, page in enumerate(reader.pages, start=1):
+        part = page.extract_text() or ""
+        block = f"\n--- Page {idx} ---\n{part}\n"
+        if not block.strip():
+            continue
+        chunks.append(block)
+        total += len(block)
+        if total >= limit:
+            break
+    text = "".join(chunks).strip()
+    if len(text) > limit:
+        text = text[:limit]
+    return text
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = re.sub(r"[^\w.\-]+", "_", (name or "").strip(), flags=re.UNICODE).strip("._")
+    if not cleaned:
+        cleaned = "download.bin"
+    return cleaned[:180]
+
+
+def _guess_filename_from_response(url: str, content_type: str, content_disposition: str) -> str:
+    cd = content_disposition or ""
+    filename_match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, flags=re.IGNORECASE)
+    if filename_match:
+        name = urllib.parse.unquote(filename_match.group(1) or "").strip()
+        if name:
+            return _safe_filename(name)
+
+    parsed = urllib.parse.urlsplit(url)
+    candidate = Path(urllib.parse.unquote(parsed.path or "")).name
+    if candidate:
+        return _safe_filename(candidate)
+
+    ct = (content_type or "").lower()
+    if "application/pdf" in ct:
+        return "download.pdf"
+    if "application/json" in ct:
+        return "download.json"
+    if "text/html" in ct:
+        return "download.html"
+    if "text/plain" in ct:
+        return "download.txt"
+    return "download.bin"
+
+
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -553,6 +608,33 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "download_web_file",
+                "description": (
+                    "Download a web file (binary-safe) and save it to local path under allowed roots. "
+                    "Use this when user asks to download/save PDF/ZIP/images/binaries."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "http/https URL"},
+                        "dst_path": {
+                            "type": "string",
+                            "description": (
+                                "Destination file path. If empty, auto-saves to downloads/<filename> under workspace."
+                            ),
+                            "default": "",
+                        },
+                        "overwrite": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                        "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 120, "default": 20},
+                        "max_bytes": {"type": "integer", "minimum": 1024, "maximum": 209715200, "default": 52428800},
+                    },
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "search_web",
                 "description": "Search the web by query and return candidate URLs/snippets.",
                 "parameters": {
@@ -583,6 +665,8 @@ class LocalToolExecutor:
             return self.replace_in_file(**arguments)
         if name == "fetch_web":
             return self.fetch_web(**arguments)
+        if name == "download_web_file":
+            return self.download_web_file(**arguments)
         if name == "search_web":
             return self.search_web(**arguments)
         return {"ok": False, "error": f"Unknown tool: {name}"}
@@ -1035,6 +1119,135 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": f"search_web failed: {exc}"}
 
+    def download_web_file(
+        self,
+        url: str,
+        dst_path: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        timeout_sec: int = 20,
+        max_bytes: int = 52_428_800,
+    ) -> dict[str, Any]:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return {"ok": False, "error": "Only http/https URLs are supported"}
+        if not parsed.netloc:
+            return {"ok": False, "error": "Invalid URL"}
+
+        try:
+            request_url = _normalize_url_for_request(url)
+        except Exception as exc:
+            return {"ok": False, "error": f"Invalid URL: {exc}"}
+
+        host = parsed.hostname or ""
+        if not self._domain_allowed(host):
+            return {
+                "ok": False,
+                "error": f"Domain not allowed: {host}. Allowed: {', '.join(self.config.web_allowed_domains)}",
+            }
+
+        timeout_val = max(3, min(120, int(timeout_sec)))
+        byte_limit = max(1024, min(209_715_200, int(max_bytes)))
+
+        ssl_context: ssl.SSLContext | None = None
+        if parsed.scheme == "https":
+            if self.config.web_skip_tls_verify:
+                ssl_context = ssl._create_unverified_context()
+            elif self.config.web_ca_cert_path:
+                try:
+                    ssl_context = ssl.create_default_context(cafile=self.config.web_ca_cert_path)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "error": f"Invalid web CA cert path: {self.config.web_ca_cert_path} ({exc})",
+                    }
+            else:
+                ssl_context = ssl.create_default_context()
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        }
+
+        tls_warning: str | None = None
+
+        def _open(current_context: ssl.SSLContext | None):
+            req = urllib.request.Request(
+                url=request_url,
+                headers=headers,
+                method="GET",
+            )
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=current_context))
+            return opener.open(req, timeout=timeout_val)
+
+        try:
+            try:
+                resp_cm = _open(ssl_context)
+            except Exception as first_exc:
+                if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
+                    tls_warning = "TLS verify failed; download_web_file auto-retried with verify disabled."
+                    resp_cm = _open(ssl._create_unverified_context())
+                else:
+                    raise
+
+            with resp_cm as resp:
+                status = getattr(resp, "status", None) or 200
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                content_disposition = resp.headers.get("Content-Disposition") or ""
+                filename = _guess_filename_from_response(url=url, content_type=content_type, content_disposition=content_disposition)
+
+                raw = resp.read(byte_limit + 1)
+                truncated = len(raw) > byte_limit
+                if truncated:
+                    return {
+                        "ok": False,
+                        "error": f"Remote file exceeds max_bytes limit ({byte_limit} bytes).",
+                        "status": status,
+                        "url": url,
+                        "content_type": content_type,
+                        "filename": filename,
+                    }
+
+                target_raw = (dst_path or "").strip()
+                if not target_raw:
+                    target_raw = str(Path("downloads") / filename)
+
+                target_path = _resolve_workspace_path(self.config, target_raw)
+                if target_path.exists() and target_path.is_dir():
+                    return {"ok": False, "error": f"Destination is a directory: {target_raw}"}
+                if target_path.exists() and not overwrite:
+                    return {"ok": False, "error": f"Destination exists and overwrite=false: {target_raw}"}
+                if not target_path.parent.exists():
+                    if not create_dirs:
+                        return {"ok": False, "error": f"Destination parent not found: {target_path.parent}"}
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+                action = "overwrite" if target_path.exists() else "create"
+                target_path.write_bytes(raw)
+                return {
+                    "ok": True,
+                    "url": url,
+                    "status": status,
+                    "content_type": content_type,
+                    "path": str(target_path),
+                    "bytes": len(raw),
+                    "filename": filename,
+                    "action": action,
+                    "warning": tls_warning,
+                }
+        except urllib.error.HTTPError as exc:
+            body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+            return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}
+        except Exception as exc:
+            return {"ok": False, "error": f"download_web_file failed: {exc}"}
+
     def fetch_web(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"}:
@@ -1111,9 +1324,63 @@ class LocalToolExecutor:
             with resp_cm as resp:
                 status = getattr(resp, "status", None) or 200
                 content_type = (resp.headers.get("Content-Type") or "").lower()
-                raw = resp.read(limit + 1)
-                truncated = len(raw) > limit
-                raw = raw[:limit]
+                content_disposition = (resp.headers.get("Content-Disposition") or "").lower()
+                pdf_like = (
+                    "application/pdf" in content_type
+                    or parsed.path.lower().endswith(".pdf")
+                    or ".pdf" in content_disposition
+                )
+                pdf_byte_limit = min(20_000_000, max(1_000_000, self.config.web_fetch_max_chars * 40))
+                raw_limit = pdf_byte_limit if pdf_like else limit
+
+                raw = resp.read(raw_limit + 1)
+                truncated = len(raw) > raw_limit
+                raw = raw[:raw_limit]
+
+                if pdf_like:
+                    try:
+                        pdf_text = _extract_pdf_text_from_bytes(raw, max_chars=limit)
+                        warning = tls_warning
+                        if truncated:
+                            warning = (
+                                f"{warning} PDF 文件较大，已按 {raw_limit} bytes 截断读取。"
+                                if warning
+                                else f"PDF 文件较大，已按 {raw_limit} bytes 截断读取。"
+                            )
+                        if not pdf_text.strip():
+                            warning = (
+                                f"{warning} PDF 可读文本为空（可能是扫描件图片）。"
+                                if warning
+                                else "PDF 可读文本为空（可能是扫描件图片）。"
+                            )
+                        return {
+                            "ok": True,
+                            "url": url,
+                            "status": status,
+                            "content_type": content_type,
+                            "binary": False,
+                            "truncated": truncated,
+                            "content": pdf_text,
+                            "length": len(pdf_text),
+                            "source_format": "pdf_text_extracted",
+                            "warning": warning,
+                        }
+                    except Exception as pdf_exc:
+                        warning = (
+                            f"{tls_warning} PDF 文本提取失败: {pdf_exc}"
+                            if tls_warning
+                            else f"PDF 文本提取失败: {pdf_exc}"
+                        )
+                        return {
+                            "ok": True,
+                            "url": url,
+                            "status": status,
+                            "content_type": content_type,
+                            "binary": True,
+                            "size_preview_bytes": len(raw),
+                            "truncated": truncated,
+                            "warning": warning,
+                        }
 
                 if any(x in content_type for x in ["application/octet-stream", "image/", "audio/", "video/"]):
                     return {
