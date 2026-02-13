@@ -24,6 +24,19 @@ const toolInput = document.getElementById("toolInput");
 const presetGeneralBtn = document.getElementById("presetGeneralBtn");
 const presetCodingBtn = document.getElementById("presetCodingBtn");
 const modeStatus = document.getElementById("modeStatus");
+const runStageBadge = document.getElementById("runStageBadge");
+const runStageText = document.getElementById("runStageText");
+const runStepList = document.getElementById("runStepList");
+const runPayloadView = document.getElementById("runPayloadView");
+const runTraceView = document.getElementById("runTraceView");
+
+const RUN_FLOW_STEPS = [
+  { id: "prepare", label: "1. 准备请求" },
+  { id: "send", label: "2. 发送请求" },
+  { id: "wait", label: "3. 模型处理中" },
+  { id: "parse", label: "4. 解析结果" },
+  { id: "done", label: "5. 完成" },
+];
 
 const MODE_PRESETS = {
   general: {
@@ -103,6 +116,83 @@ function formatNumberedLines(title, items) {
 
 function refreshSession() {
   sessionIdView.textContent = state.sessionId || "(未创建)";
+}
+
+function renderRunSteps(activeStepId, isError = false) {
+  if (!runStepList) return;
+
+  const activeIndex = RUN_FLOW_STEPS.findIndex((step) => step.id === activeStepId);
+  runStepList.innerHTML = "";
+
+  RUN_FLOW_STEPS.forEach((step, index) => {
+    const node = document.createElement("div");
+    node.className = "runtime-step";
+    if (activeIndex >= 0 && index < activeIndex) {
+      node.classList.add("is-done");
+    }
+    if (activeIndex === index) {
+      node.classList.add(isError ? "is-error" : "is-active");
+    }
+    node.textContent = step.label;
+    runStepList.appendChild(node);
+  });
+}
+
+function setRunStage(stageLabel, text, stepId = null, tone = "idle") {
+  if (runStageBadge) {
+    runStageBadge.textContent = stageLabel;
+    runStageBadge.className = `stage-badge stage-${tone}`;
+  }
+  if (runStageText) {
+    runStageText.textContent = text;
+  }
+  renderRunSteps(stepId, tone === "error");
+}
+
+function formatJsonPreview(value, maxChars = 10000) {
+  const raw = JSON.stringify(value, null, 2);
+  if (raw.length <= maxChars) return raw;
+  return `${raw.slice(0, maxChars)}\n\n...[truncated ${raw.length - maxChars} chars]`;
+}
+
+function renderRunPayload(body, attachmentNames) {
+  if (!runPayloadView) return;
+  const settings = body?.settings || {};
+  const header = [
+    `session_id: ${body?.session_id || "(new session)"}`,
+    `message_chars: ${String(body?.message || "").length}`,
+    `attachments: ${attachmentNames.length ? attachmentNames.join("，") : "(none)"}`,
+    `model: ${settings.model || "(default)"}`,
+    `max_output_tokens: ${settings.max_output_tokens}`,
+    `max_context_turns: ${settings.max_context_turns}`,
+    `enable_tools: ${settings.enable_tools}`,
+    `response_style: ${settings.response_style}`,
+    "",
+    "payload json:",
+  ];
+  runPayloadView.textContent = `${header.join("\n")}\n${formatJsonPreview(body)}`;
+}
+
+function renderRunTrace(traceItems = [], toolEvents = []) {
+  if (!runTraceView) return;
+
+  const lines = [];
+  if (Array.isArray(traceItems) && traceItems.length) {
+    traceItems.forEach((item, idx) => lines.push(`${idx + 1}. ${item}`));
+  } else {
+    lines.push("暂无执行轨迹");
+  }
+
+  if (Array.isArray(toolEvents) && toolEvents.length) {
+    lines.push("");
+    lines.push("工具调用:");
+    toolEvents.forEach((tool, idx) => {
+      const args = tool?.input ? JSON.stringify(tool.input) : "{}";
+      lines.push(`${idx + 1}. ${tool?.name || "unknown"}(${args})`);
+    });
+  }
+
+  runTraceView.textContent = lines.join("\n");
 }
 
 function formatUsd(value) {
@@ -233,7 +323,10 @@ async function sendMessage() {
   const message = messageInput.value.trim();
   if (!message || state.sending) return;
 
+  setRunStage("进行中", "正在准备本轮请求参数", "prepare", "working");
+
   if (!state.sessionId) {
+    setRunStage("进行中", "正在创建新会话", "prepare", "working");
     await createSession();
   }
 
@@ -253,12 +346,20 @@ async function sendMessage() {
       attachment_ids: state.attachments.map((x) => x.id),
       settings: getSettings(),
     };
+    renderRunPayload(
+      body,
+      state.attachments.map((x) => x.name)
+    );
+    renderRunTrace(["客户端已组装请求，等待发送。"], []);
+    setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
 
+    setRunStage("进行中", "模型处理中（可能会调用工具）", "wait", "working");
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    setRunStage("进行中", "收到服务响应，正在解析", "parse", "working");
 
     const data = await res.json();
     if (!res.ok) {
@@ -287,6 +388,7 @@ async function sendMessage() {
     if (traceText) {
       addBubble("system", traceText, null);
     }
+    renderRunTrace(data.execution_trace || [], data.tool_events || []);
 
     addBubble("assistant", data.text, data.tool_events || []);
 
@@ -296,7 +398,10 @@ async function sendMessage() {
       session: data.session_token_totals || {},
       global: data.global_token_totals || {},
     });
+    setRunStage("完成", "本轮已完成", "done", "done");
   } catch (err) {
+    renderRunTrace([`请求失败: ${String(err)}`], []);
+    setRunStage("失败", "请求失败，请检查错误信息", "parse", "error");
     addBubble("system", `请求失败: ${String(err)}`);
   } finally {
     state.sending = false;
@@ -369,6 +474,17 @@ if (clearStatsBtn) {
 
 (async function boot() {
   applyModePreset("general", false);
+  setRunStage("空闲", "等待发送请求", null, "idle");
+  renderRunPayload(
+    {
+      session_id: null,
+      message: "",
+      attachment_ids: [],
+      settings: getSettings(),
+    },
+    []
+  );
+  renderRunTrace([], []);
   try {
     const health = await fetch("/api/health").then((r) => r.json());
     addBubble("system", `服务已启动，默认模型：${health.model_default}`);

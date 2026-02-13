@@ -191,8 +191,121 @@ button.small {
 
 .chat-wrap {
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto 1fr auto;
   min-height: calc(100vh - 32px);
+}
+
+.runtime-panel {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  background: #f9fcf7;
+  display: grid;
+  gap: 8px;
+}
+
+.runtime-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-head-text {
+  font-size: 12px;
+  color: #355442;
+}
+
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+
+.stage-idle {
+  background: #eef2ec;
+  color: #4f5c55;
+  border-color: #d6ddd2;
+}
+
+.stage-working {
+  background: #e6f2eb;
+  color: #126a41;
+  border-color: #a9cfb8;
+}
+
+.stage-done {
+  background: #e1f4e9;
+  color: #0f6a3e;
+  border-color: #8ec4a4;
+}
+
+.stage-error {
+  background: #fdebe4;
+  color: #8b3a1b;
+  border-color: #efc0ab;
+}
+
+.runtime-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.runtime-step {
+  border: 1px solid #d6ded2;
+  background: #f3f7f1;
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 6px 8px;
+  color: #58695e;
+}
+
+.runtime-step.is-active {
+  border-color: #82b192;
+  background: #e4f2e9;
+  color: #1c633f;
+  font-weight: 600;
+}
+
+.runtime-step.is-done {
+  border-color: #9ac2a8;
+  background: #ebf7ef;
+  color: #315b45;
+}
+
+.runtime-step.is-error {
+  border-color: #e4b39f;
+  background: #fff2ed;
+  color: #8a3c22;
+}
+
+.runtime-details {
+  border: 1px solid #d5dfd1;
+  border-radius: 8px;
+  background: #f6faf4;
+}
+
+.runtime-details summary {
+  cursor: pointer;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: #456554;
+  user-select: none;
+}
+
+.runtime-pre {
+  margin: 0;
+  padding: 8px;
+  border-top: 1px solid #e1e8dd;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
 }
 
 .chat-list {
@@ -334,5 +447,15 @@ textarea {
 
   .chat-wrap {
     min-height: 70vh;
+  }
+
+  .runtime-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .runtime-steps {
+    grid-template-columns: 1fr;
   }
 }

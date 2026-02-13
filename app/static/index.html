@@ -72,6 +72,22 @@
       </aside>
 
       <section class="chat-wrap">
+        <div class="runtime-panel">
+          <div class="runtime-head">
+            <span id="runStageBadge" class="stage-badge stage-idle">空闲</span>
+            <span id="runStageText" class="runtime-head-text">等待发送请求</span>
+          </div>
+          <div id="runStepList" class="runtime-steps"></div>
+          <details class="runtime-details">
+            <summary>本轮发送信息</summary>
+            <pre id="runPayloadView" class="runtime-pre">暂无请求</pre>
+          </details>
+          <details class="runtime-details" open>
+            <summary>本轮执行流程</summary>
+            <pre id="runTraceView" class="runtime-pre">暂无执行轨迹</pre>
+          </details>
+        </div>
+
         <div id="chatList" class="chat-list"></div>
 
         <div class="composer">
