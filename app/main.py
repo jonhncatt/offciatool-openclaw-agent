@@ -130,7 +130,7 @@ def chat(req: ChatRequest) -> ChatResponse:
     found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
     missing_attachment_ids = [file_id for file_id in req.attachment_ids if file_id not in found_attachment_ids]
 
-    text, tool_events, attachment_note, execution_plan, execution_trace, token_usage = agent.run_chat(
+    text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, token_usage = agent.run_chat(
         history_turns=session.get("turns", []),
         summary=session.get("summary", ""),
         user_message=req.message,
@@ -140,6 +140,14 @@ def chat(req: ChatRequest) -> ChatResponse:
     if missing_attachment_ids:
         execution_trace.append(
             f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
+        )
+        debug_flow.append(
+            {
+                "step": len(debug_flow) + 1,
+                "stage": "backend_warning",
+                "title": "附件检查",
+                "detail": f"检测到 {len(missing_attachment_ids)} 个附件 ID 丢失，已提示前端重新上传。",
+            }
         )
 
     user_text = req.message.strip()
@@ -168,8 +176,29 @@ def chat(req: ChatRequest) -> ChatResponse:
             f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
             f"output ${pricing_meta.get('output_price_per_1m')}/1M."
         )
+        debug_flow.append(
+            {
+                "step": len(debug_flow) + 1,
+                "stage": "backend_pricing",
+                "title": "费用估算",
+                "detail": (
+                    f"按 {pricing_meta.get('pricing_model')} 计价："
+                    f"in ${pricing_meta.get('input_price_per_1m')}/1M, "
+                    f"out ${pricing_meta.get('output_price_per_1m')}/1M, "
+                    f"本轮约 ${pricing_meta.get('estimated_cost_usd')}."
+                ),
+            }
+        )
     else:
         execution_trace.append(f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。")
+        debug_flow.append(
+            {
+                "step": len(debug_flow) + 1,
+                "stage": "backend_pricing",
+                "title": "费用估算",
+                "detail": f"模型 {selected_model} 未匹配内置价格表，仅统计 token。",
+            }
+        )
 
     stats_snapshot = token_stats_store.add_usage(
         session_id=session["id"],
@@ -185,6 +214,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         tool_events=tool_events,
         execution_plan=execution_plan,
         execution_trace=execution_trace,
+        debug_flow=debug_flow,
         missing_attachment_ids=missing_attachment_ids,
         token_usage=TokenUsage(**token_usage),
         session_token_totals=TokenTotals(**session_totals_raw),

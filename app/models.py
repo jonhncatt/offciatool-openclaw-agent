@@ -26,6 +26,13 @@ class ToolEvent(BaseModel):
     output_preview: str
 
 
+class DebugFlowItem(BaseModel):
+    step: int
+    stage: str
+    title: str
+    detail: str
+
+
 class TokenUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
@@ -52,6 +59,7 @@ class ChatResponse(BaseModel):
     tool_events: list[ToolEvent] = Field(default_factory=list)
     execution_plan: list[str] = Field(default_factory=list)
     execution_trace: list[str] = Field(default_factory=list)
+    debug_flow: list[DebugFlowItem] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)

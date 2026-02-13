@@ -158,13 +158,24 @@ class OfficeAgent:
         user_message: str,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
-    ) -> tuple[str, list[ToolEvent], str, list[str], list[str], dict[str, int]]:
+    ) -> tuple[str, list[ToolEvent], str, list[str], list[str], list[dict[str, Any]], dict[str, int]]:
         model = settings.model or self.config.default_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
         execution_plan = self._build_execution_plan(attachment_metas=attachment_metas, settings=settings)
         execution_trace: list[str] = []
+        debug_flow: list[dict[str, Any]] = []
         usage_total = self._empty_usage()
         allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
+
+        def add_debug(stage: str, title: str, detail: str) -> None:
+            debug_flow.append(
+                {
+                    "step": len(debug_flow) + 1,
+                    "stage": stage,
+                    "title": title,
+                    "detail": self._shorten(detail, 3200),
+                }
+            )
 
         messages: list[Any] = [
             self._SystemMessage(
@@ -207,6 +218,18 @@ class OfficeAgent:
         for issue in attachment_issues:
             execution_trace.append(f"附件提示: {issue}")
 
+        add_debug(
+            stage="backend_to_llm",
+            title="后端 -> LLM 请求",
+            detail=(
+                f"model={model}, enable_tools={settings.enable_tools}, max_output_tokens={settings.max_output_tokens}, "
+                f"history_turns_used={min(len(history_turns), settings.max_context_turns)}, "
+                f"attachments={len(attachment_metas)}\n"
+                f"message_roles={self._summarize_message_roles(messages)}\n"
+                f"user_message_preview={self._shorten(user_message, 400)}"
+            ),
+        )
+
         tool_events: list[ToolEvent] = []
         execution_trace.append("开始模型推理。")
 
@@ -218,9 +241,23 @@ class OfficeAgent:
                 enable_tools=settings.enable_tools,
             )
             usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+            add_debug(
+                stage="llm_to_backend",
+                title="LLM -> 后端 首次响应",
+                detail=self._summarize_ai_response(ai_msg),
+            )
         except Exception as exc:
             execution_trace.append(f"模型请求失败: {exc}")
-            return f"请求模型失败: {exc}", tool_events, attachment_note, execution_plan, execution_trace, usage_total
+            add_debug(stage="llm_error", title="LLM 请求失败", detail=str(exc))
+            return (
+                f"请求模型失败: {exc}",
+                tool_events,
+                attachment_note,
+                execution_plan,
+                execution_trace,
+                debug_flow,
+                usage_total,
+            )
 
         for _ in range(12):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
@@ -237,6 +274,11 @@ class OfficeAgent:
                 result = self.tools.execute(name, arguments)
                 result_json = json.dumps(result, ensure_ascii=False)
                 execution_trace.append(f"执行工具: {name}")
+                add_debug(
+                    stage="llm_to_backend",
+                    title=f"LLM -> 后端 工具调用 {name}",
+                    detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200)}",
+                )
 
                 tool_events.append(
                     ToolEvent(
@@ -254,18 +296,35 @@ class OfficeAgent:
                         name=name,
                     )
                 )
+                add_debug(
+                    stage="backend_tool",
+                    title=f"后端工具执行结果 {name}",
+                    detail=self._shorten(result_json, 1800),
+                )
+                add_debug(
+                    stage="backend_to_llm",
+                    title=f"后端 -> LLM 工具结果 {name}",
+                    detail=f"tool_call_id={call_id}, payload_chars={len(result_json)}",
+                )
 
             try:
                 ai_msg = runner.invoke(messages)
                 usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                add_debug(
+                    stage="llm_to_backend",
+                    title="LLM -> 后端 后续响应",
+                    detail=self._summarize_ai_response(ai_msg),
+                )
             except Exception as exc:
                 execution_trace.append(f"工具后续推理失败: {exc}")
+                add_debug(stage="llm_error", title="工具后续推理失败", detail=str(exc))
                 return (
                     f"工具执行后续推理失败: {exc}",
                     tool_events,
                     attachment_note,
                     execution_plan,
                     execution_trace,
+                    debug_flow,
                     usage_total,
                 )
 
@@ -273,7 +332,12 @@ class OfficeAgent:
         if not text.strip():
             text = "模型未返回可见文本。"
         execution_trace.append("已生成最终答复。")
-        return text, tool_events, attachment_note, execution_plan, execution_trace, usage_total
+        add_debug(
+            stage="llm_final",
+            title="LLM 最终输出",
+            detail=f"text_chars={len(text)}\npreview={self._shorten(text, 1200)}",
+        )
+        return text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, usage_total
 
     def _build_execution_plan(self, attachment_metas: list[dict[str, Any]], settings: ChatSettings) -> list[str]:
         plan = ["理解你的目标和约束。"]
@@ -531,6 +595,42 @@ class OfficeAgent:
                 if isinstance(text, str) and text:
                     out.append(text)
         return "\n".join(out).strip()
+
+    def _shorten(self, text: Any, limit: int = 800) -> str:
+        raw = str(text or "")
+        if len(raw) <= limit:
+            return raw
+        return f"{raw[:limit]}\n...[truncated {len(raw) - limit} chars]"
+
+    def _summarize_message_roles(self, messages: list[Any]) -> str:
+        counts: dict[str, int] = {}
+        for msg in messages:
+            role = type(msg).__name__
+            counts[role] = counts.get(role, 0) + 1
+        parts = [f"{k}={v}" for k, v in sorted(counts.items())]
+        return ", ".join(parts) if parts else "(empty)"
+
+    def _summarize_ai_response(self, ai_msg: Any) -> str:
+        lines: list[str] = []
+        tool_calls = getattr(ai_msg, "tool_calls", None) or []
+        if tool_calls:
+            lines.append(f"tool_calls={len(tool_calls)}")
+            for idx, call in enumerate(tool_calls, start=1):
+                name = call.get("name") or "unknown"
+                args = call.get("args") or {}
+                if not isinstance(args, dict):
+                    args = {}
+                lines.append(
+                    f"{idx}. {name}(args={self._shorten(json.dumps(args, ensure_ascii=False), 600)})"
+                )
+
+        text = self._content_to_text(getattr(ai_msg, "content", ""))
+        if text.strip():
+            lines.append(f"text_preview={self._shorten(text, 1200)}")
+
+        if not lines:
+            lines.append("empty response content")
+        return "\n".join(lines)
 
     def _empty_usage(self) -> dict[str, int]:
         return {

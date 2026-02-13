@@ -29,6 +29,7 @@ const runStageText = document.getElementById("runStageText");
 const runStepList = document.getElementById("runStepList");
 const runPayloadView = document.getElementById("runPayloadView");
 const runTraceView = document.getElementById("runTraceView");
+const runLlmFlowView = document.getElementById("runLlmFlowView");
 
 const RUN_FLOW_STEPS = [
   { id: "prepare", label: "1. 准备请求" },
@@ -195,6 +196,27 @@ function renderRunTrace(traceItems = [], toolEvents = []) {
   runTraceView.textContent = lines.join("\n");
 }
 
+function renderLlmFlow(items = []) {
+  if (!runLlmFlowView) return;
+  if (!Array.isArray(items) || !items.length) {
+    runLlmFlowView.textContent = "暂无交换记录";
+    return;
+  }
+
+  const lines = [];
+  items.forEach((item, idx) => {
+    const step = item?.step ?? idx + 1;
+    const stage = item?.stage || "unknown";
+    const title = item?.title || "未命名步骤";
+    const detail = item?.detail || "";
+    lines.push(`[${step}] ${title} (${stage})`);
+    lines.push(detail);
+    lines.push("");
+  });
+
+  runLlmFlowView.textContent = lines.join("\n").trim();
+}
+
 function formatUsd(value) {
   const num = Number(value || 0);
   if (!Number.isFinite(num) || num <= 0) return "0.000000";
@@ -351,6 +373,14 @@ async function sendMessage() {
       state.attachments.map((x) => x.name)
     );
     renderRunTrace(["客户端已组装请求，等待发送。"], []);
+    renderLlmFlow([
+      {
+        step: 1,
+        stage: "frontend_prepare",
+        title: "前端准备请求",
+        detail: "已生成 payload，正在调用 /api/chat",
+      },
+    ]);
     setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
 
     setRunStage("进行中", "模型处理中（可能会调用工具）", "wait", "working");
@@ -384,15 +414,10 @@ async function sendMessage() {
       refreshFileList();
     }
 
-    const traceText = formatNumberedLines("执行轨迹", data.execution_trace || []);
-    if (traceText) {
-      addBubble("system", traceText, null);
-    }
     renderRunTrace(data.execution_trace || [], data.tool_events || []);
+    renderLlmFlow(data.debug_flow || []);
 
     addBubble("assistant", data.text, data.tool_events || []);
-
-    addBubble("system", "附件已保留，可继续追问；不需要时点附件上的 × 删除。");
     renderTokenStats({
       last: data.token_usage || {},
       session: data.session_token_totals || {},
@@ -401,6 +426,14 @@ async function sendMessage() {
     setRunStage("完成", "本轮已完成", "done", "done");
   } catch (err) {
     renderRunTrace([`请求失败: ${String(err)}`], []);
+    renderLlmFlow([
+      {
+        step: 1,
+        stage: "frontend_error",
+        title: "前端请求失败",
+        detail: String(err),
+      },
+    ]);
     setRunStage("失败", "请求失败，请检查错误信息", "parse", "error");
     addBubble("system", `请求失败: ${String(err)}`);
   } finally {
@@ -485,6 +518,7 @@ if (clearStatsBtn) {
     []
   );
   renderRunTrace([], []);
+  renderLlmFlow([]);
   try {
     const health = await fetch("/api/health").then((r) => r.json());
     addBubble("system", `服务已启动，默认模型：${health.model_default}`);
