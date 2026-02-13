@@ -99,6 +99,8 @@ class UploadStore:
         kind = "other"
         if mime.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif"}:
             kind = "image"
+        elif mime.lower() in {"application/vnd.ms-outlook", "application/x-msg"}:
+            kind = "document"
         elif suffix in {
             ".txt",
             ".md",
