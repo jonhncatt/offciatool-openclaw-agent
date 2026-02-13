@@ -16,6 +16,7 @@ const newSessionBtn = document.getElementById("newSessionBtn");
 const sessionIdView = document.getElementById("sessionIdView");
 const sessionHistoryView = document.getElementById("sessionHistoryView");
 const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
+const deleteSessionBtn = document.getElementById("deleteSessionBtn");
 const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
 
@@ -118,6 +119,9 @@ function formatNumberedLines(title, items) {
 
 function refreshSession() {
   sessionIdView.textContent = state.sessionId || "(未创建)";
+  if (deleteSessionBtn) {
+    deleteSessionBtn.disabled = !state.sessionId;
+  }
   try {
     if (state.sessionId) {
       window.localStorage.setItem(SESSION_STORAGE_KEY, state.sessionId);
@@ -179,9 +183,6 @@ async function refreshSessionHistory() {
       const sid = String(item?.session_id || "");
       if (!sid) return;
 
-      const row = document.createElement("div");
-      row.className = "session-history-row";
-
       const openBtn = document.createElement("button");
       openBtn.type = "button";
       openBtn.className = "session-history-item";
@@ -208,20 +209,7 @@ async function refreshSessionHistory() {
       openBtn.addEventListener("click", async () => {
         await loadSessionById(sid, { announceMode: "switch" });
       });
-
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      deleteBtn.className = "session-history-delete";
-      deleteBtn.textContent = "删除";
-      deleteBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        await deleteSessionById(sid);
-      });
-
-      row.appendChild(openBtn);
-      row.appendChild(deleteBtn);
-      sessionHistoryView.appendChild(row);
+      sessionHistoryView.appendChild(openBtn);
     });
     return sessions;
   } catch {
@@ -710,6 +698,16 @@ if (refreshSessionsBtn) {
   refreshSessionsBtn.addEventListener("click", async () => {
     await refreshSessionHistory();
     addBubble("system", "历史会话列表已刷新。");
+  });
+}
+
+if (deleteSessionBtn) {
+  deleteSessionBtn.addEventListener("click", async () => {
+    if (!state.sessionId) {
+      addBubble("system", "当前没有可删除的会话。");
+      return;
+    }
+    await deleteSessionById(state.sessionId);
   });
 }
 

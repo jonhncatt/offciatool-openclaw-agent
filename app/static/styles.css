@@ -184,18 +184,16 @@ button.small {
   margin-bottom: 6px;
 }
 
+.session-history-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
 .session-history-list {
   max-height: 220px;
   overflow: auto;
   display: grid;
   gap: 6px;
-}
-
-.session-history-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px;
-  align-items: stretch;
 }
 
 .session-history-empty {
@@ -240,21 +238,6 @@ button.small {
   font-size: 11px;
   color: #395645;
   line-height: 1.25;
-}
-
-.session-history-delete {
-  border: 1px solid #e1c0b6;
-  background: #fff3ee;
-  color: #7b3a1e;
-  border-radius: 8px;
-  padding: 0 8px;
-  font-size: 11px;
-  min-width: 46px;
-}
-
-.session-history-delete:hover {
-  background: #fde8df;
-  border-color: #d8a794;
 }
 
 .stats-view {
