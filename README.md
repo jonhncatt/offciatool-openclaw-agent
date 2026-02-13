@@ -105,7 +105,7 @@ cd $HOME\Desktop\officetool
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
-- `read_text_file`: 读文本文件（支持 `start_char + max_chars` 分块读取大文件）
+- `read_text_file`: 读本地文本/文档（PDF/DOCX/MSG 自动提取文本，支持 `start_char + max_chars` 分块）
 - `copy_file`: 二进制安全复制文件（推荐用于“复制整个文件”）
 - `write_text_file`: 新建/覆盖写文本文件
 - `replace_in_file`: 按目标文本做替换（支持一次或多次）

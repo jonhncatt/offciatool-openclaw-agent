@@ -530,7 +530,10 @@ class LocalToolExecutor:
             {
                 "type": "function",
                 "name": "read_text_file",
-                "description": "Read a UTF-8 text file in workspace. Supports chunked reads with start_char.",
+                "description": (
+                    "Read a local text/document file in allowed roots. "
+                    "For PDF/DOCX/MSG it auto-extracts text; supports chunked reads with start_char."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -750,8 +753,45 @@ class LocalToolExecutor:
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
                 return {"ok": False, "error": f"Not a file: {path}"}
+            suffix = real_path.suffix.lower()
+            source_format = "text_utf8"
+            full_text = ""
 
-            full_text = real_path.read_text(encoding="utf-8", errors="ignore")
+            # For office/binary documents, try structured extraction first
+            # so users can "download then read" in one flow.
+            if suffix == ".pdf":
+                source_format = "pdf_text_extracted"
+                try:
+                    raw_pdf = real_path.read_bytes()
+                    full_text = _extract_pdf_text_from_bytes(raw_pdf, max_chars=1_000_000)
+                except Exception as exc:
+                    full_text = f"[文档解析失败: {exc}]"
+            elif suffix in {".docx", ".msg"}:
+                from app.attachments import extract_document_text  # lazy import
+
+                extracted = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                full_text = extracted
+                if suffix == ".docx":
+                    source_format = "docx_text_extracted"
+                elif suffix == ".msg":
+                    source_format = "msg_text_extracted"
+            else:
+                # Content sniffing: handle PDFs saved without .pdf suffix.
+                try:
+                    raw = real_path.read_bytes()
+                    head = raw[:8]
+                except Exception:
+                    raw = b""
+                    head = b""
+                if head.startswith(b"%PDF-"):
+                    source_format = "pdf_text_extracted"
+                    try:
+                        full_text = _extract_pdf_text_from_bytes(raw, max_chars=1_000_000)
+                    except Exception as exc:
+                        full_text = f"[文档解析失败: {exc}]"
+                else:
+                    full_text = real_path.read_text(encoding="utf-8", errors="ignore")
+
             total_length = len(full_text)
             limit = max(128, min(1_000_000, int(max_chars)))
             start = max(0, int(start_char))
@@ -770,6 +810,7 @@ class LocalToolExecutor:
                 "total_length": total_length,
                 "truncated": truncated,
                 "has_more": truncated,
+                "source_format": source_format,
             }
         except Exception as exc:
             return {"ok": False, "error": f"read_text_file failed: {exc}"}
