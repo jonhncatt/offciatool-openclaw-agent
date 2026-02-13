@@ -253,6 +253,9 @@ class OfficeAgent:
                     "读取文件优先使用 list_directory/read_text_file；"
                     "read_text_file 对本地 PDF/DOCX/MSG 会自动提取文本；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
+                    "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
+                    "应先调用 read_text_file(path=..., start_char=0, max_chars=1000000)，"
+                    "若 has_more=true 再自动续读后续分块，不要把“是否继续读取”抛回给用户；"
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "解压 zip 文件优先使用 extract_zip；"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
@@ -377,9 +380,46 @@ class OfficeAgent:
                 usage_total,
             )
 
+        auto_nudge_budget = 2
         for _ in range(24):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not settings.enable_tools or not tool_calls:
+                if (
+                    settings.enable_tools
+                    and attachment_metas
+                    and auto_nudge_budget > 0
+                    and self._looks_like_permission_gate(ai_msg)
+                ):
+                    auto_nudge_budget -= 1
+                    add_trace("检测到模型在等待用户确认，后端已自动要求其直接执行工具。")
+                    add_debug(
+                        stage="backend_warning",
+                        title="自动纠偏：避免逐步确认",
+                        detail="模型出现“是否继续读取”倾向，已追加系统指令要求直接执行。",
+                    )
+                    messages.append(ai_msg)
+                    messages.append(
+                        self._SystemMessage(
+                            content=(
+                                "不要询问用户是否继续读取或是否授权。"
+                                "用户当前请求已授权你直接继续执行。"
+                                "请立即调用必要工具（优先 read_text_file）并给出结果。"
+                            )
+                        )
+                    )
+                    try:
+                        ai_msg = runner.invoke(messages)
+                        usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
+                        add_debug(
+                            stage="llm_to_backend",
+                            title="LLM -> 后端 自动纠偏后响应",
+                            detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
+                        )
+                        continue
+                    except Exception as exc:
+                        add_trace(f"自动纠偏后推理失败: {exc}")
+                        add_debug(stage="llm_error", title="自动纠偏后推理失败", detail=str(exc))
+                        break
                 break
 
             messages.append(ai_msg)
@@ -617,7 +657,8 @@ class OfficeAgent:
                 name="read_text_file",
                 description=(
                     "Read a local text/document file. Auto extracts text from PDF/DOCX/MSG. "
-                    "Supports chunked reads with start_char."
+                    "Supports chunked reads with start_char. "
+                    "For complete reading use max_chars up to 1000000 and continue while has_more=true."
                 ),
                 args_schema=ReadTextFileArgs,
                 func=self._read_text_file_tool,
@@ -934,6 +975,33 @@ class OfficeAgent:
         if idx == 0:
             return f"{int(size)} {units[idx]}"
         return f"{size:.2f} {units[idx]}"
+
+    def _looks_like_permission_gate(self, ai_msg: Any) -> bool:
+        text = self._content_to_text(getattr(ai_msg, "content", "")).strip().lower()
+        if not text:
+            return False
+        if len(text) > 5000:
+            text = text[:5000]
+        patterns = (
+            "要不要",
+            "是否继续",
+            "是否要我",
+            "请告诉我",
+            "你可以告诉我",
+            "继续读取吗",
+            "继续读吗",
+            "怕太大",
+            "太大",
+            "need your confirmation",
+            "do you want me to continue",
+            "should i continue",
+            "please provide instructions",
+        )
+        if not any(p in text for p in patterns):
+            return False
+        # Heuristic: avoid over-triggering on normal questions by requiring mention of files/reading.
+        file_hints = ("文件", "读取", "read_text_file", "chunk", "附件", "文档", "path")
+        return any(h in text for h in file_hints)
 
     def _summarize_message_roles(self, messages: list[Any]) -> str:
         counts: dict[str, int] = {}
