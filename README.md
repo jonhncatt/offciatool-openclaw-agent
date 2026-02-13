@@ -122,6 +122,7 @@ cd $HOME\Desktop\officetool
 - 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 - 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
 - `fetch_web` 遇到 PDF 会尽量抽取正文文本；需要原始文件时请用 `download_web_file`
+- 上传附件会把“本地路径”注入上下文；压缩包建议直接 `extract_zip(zip_path=该路径, ...)`
 - 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互
 - 对“新闻/实时”类问题，后端会自动做一次 `search_web` 预搜索并把候选链接注入上下文，减少反复追问
 - 对“棒球新闻”等体育场景，`search_web` 会优先尝试 MLB/ESPN/Yahoo 等 RSS 源；搜索页被反爬时也会回退到可访问入口

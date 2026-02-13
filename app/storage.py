@@ -176,6 +176,7 @@ class UploadStore:
             ".pdf",
             ".docx",
             ".msg",
+            ".zip",
             ".doc",
             ".xlsx",
             ".xls",

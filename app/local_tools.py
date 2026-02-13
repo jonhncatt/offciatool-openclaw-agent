@@ -99,6 +99,45 @@ def _resolve_workspace_path(config: AppConfig, raw_path: str) -> Path:
     raise ValueError(f"Path out of allowed roots: {raw_path}. Allowed roots: {allowed}")
 
 
+def _resolve_source_path(config: AppConfig, raw_path: str) -> Path:
+    """
+    Resolve existing source file path with upload-name fallback.
+    If raw_path is only an original upload filename (e.g. a.zip),
+    try matching uploads_dir entry like <uuid>__a.zip.
+    """
+    resolved = _resolve_workspace_path(config, raw_path)
+    if resolved.exists():
+        return resolved
+
+    raw = (raw_path or "").strip()
+    if not raw:
+        return resolved
+
+    p = Path(raw.replace("\\", "/"))
+    if p.is_absolute():
+        return resolved
+
+    basename = p.name
+    if not basename:
+        return resolved
+
+    try:
+        matches = sorted(
+            config.uploads_dir.glob(f"*__{basename}"),
+            key=lambda m: m.stat().st_mtime,
+            reverse=True,
+        )
+    except Exception:
+        return resolved
+
+    for match in matches:
+        candidate = match.resolve()
+        for root in config.allowed_roots:
+            if _is_within(candidate, root):
+                return candidate
+    return resolved
+
+
 def _truncate_output(text: str, max_chars: int = 12000) -> str:
     if len(text) <= max_chars:
         return text
@@ -781,7 +820,7 @@ class LocalToolExecutor:
 
     def read_text_file(self, path: str, start_char: int = 0, max_chars: int = 200000) -> dict[str, Any]:
         try:
-            real_path = _resolve_workspace_path(self.config, path)
+            real_path = _resolve_source_path(self.config, path)
             if not real_path.exists():
                 return {"ok": False, "error": f"Path not found: {path}"}
             if not real_path.is_file():
@@ -852,7 +891,7 @@ class LocalToolExecutor:
         self, src_path: str, dst_path: str, overwrite: bool = True, create_dirs: bool = True
     ) -> dict[str, Any]:
         try:
-            src_real = _resolve_workspace_path(self.config, src_path)
+            src_real = _resolve_source_path(self.config, src_path)
             dst_real = _resolve_workspace_path(self.config, dst_path)
 
             if not src_real.exists():
@@ -894,7 +933,7 @@ class LocalToolExecutor:
         max_total_bytes: int = 524288000,
     ) -> dict[str, Any]:
         try:
-            zip_real = _resolve_workspace_path(self.config, zip_path)
+            zip_real = _resolve_source_path(self.config, zip_path)
             if not zip_real.exists():
                 return {"ok": False, "error": f"Zip path not found: {zip_path}"}
             if not zip_real.is_file():

@@ -233,6 +233,7 @@ class OfficeAgent:
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "解压 zip 文件优先使用 extract_zip；"
+                    "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
                     "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
                     "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
                     "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
@@ -745,11 +746,23 @@ class OfficeAgent:
             path = meta.get("path", "")
             kind = meta.get("kind", "other")
             mime = meta.get("mime", "application/octet-stream")
+            suffix = str(meta.get("suffix", "") or "").lower()
+            local_path_line = f"本地路径: {path}\n" if path else ""
+            zip_hint_line = (
+                "该文件是 ZIP，若需要解压可调用 extract_zip(zip_path=该路径, dst_dir=目标目录)。\n"
+                if suffix == ".zip"
+                else ""
+            )
 
             if kind == "document":
                 extracted = extract_document_text(path, self.config.max_attachment_chars)
                 if extracted:
-                    parts.append({"type": "text", "text": f"\n[附件文档: {name}]\n{extracted}"})
+                    parts.append(
+                        {
+                            "type": "text",
+                            "text": f"\n[附件文档: {name}]\n{local_path_line}{zip_hint_line}{extracted}",
+                        }
+                    )
                     notes.append(f"文档:{name}")
                     if extracted.startswith("[文档解析失败:"):
                         issues.append(f"{name} 文档解析失败，模型只收到错误信息。")
@@ -760,7 +773,8 @@ class OfficeAgent:
                             {
                                 "type": "text",
                                 "text": (
-                                    f"[附件文档: {name}] 未识别为结构化文本，已附带文件预览。\n{preview}"
+                                    f"[附件文档: {name}] 未识别为结构化文本，已附带文件预览。\n"
+                                    f"{local_path_line}{zip_hint_line}{preview}"
                                 ),
                             }
                         )
@@ -773,7 +787,7 @@ class OfficeAgent:
             elif kind == "image":
                 try:
                     data_url, warn = image_to_data_url_with_meta(path, mime)
-                    parts.append({"type": "text", "text": f"[附件图片: {name}]"})
+                    parts.append({"type": "text", "text": f"[附件图片: {name}]\n{local_path_line}"})
                     parts.append({"type": "image_url", "image_url": {"url": data_url}})
                     notes.append(f"图片:{name}")
                     if warn:
@@ -788,7 +802,10 @@ class OfficeAgent:
                     parts.append(
                         {
                             "type": "text",
-                            "text": f"[附件: {name}] 二进制/未知类型，已附带文件预览。\n{preview}",
+                            "text": (
+                                f"[附件: {name}] 二进制/未知类型，已附带文件预览。\n"
+                                f"{local_path_line}{zip_hint_line}{preview}"
+                            ),
                         }
                     )
                     notes.append(f"其他(预览):{name}")
