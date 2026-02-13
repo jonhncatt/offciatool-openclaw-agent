@@ -106,6 +106,7 @@ class UploadStore:
             ".json",
             ".pdf",
             ".docx",
+            ".msg",
             ".doc",
             ".xlsx",
             ".xls",

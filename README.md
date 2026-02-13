@@ -93,8 +93,9 @@ cd $HOME\Desktop\officetool
 ### 图片/文档
 
 - 支持图片：png/jpg/jpeg/webp/gif/heic/heif
-- 支持文档：txt/md/csv/json/pdf/docx 及常见代码文本
+- 支持文档：txt/md/csv/json/pdf/docx/msg 及常见代码文本
 - 图片直接送入多模态输入；文档会先抽取文本后送入模型
+- `.msg`（Outlook 邮件）会抽取主题/发件人/收件人/时间/正文/附件列表
 - HEIC 优先本地转码为 JPEG；若环境缺少转码依赖会回退为原始 HEIC 并给出提示
 - 对无法结构化解析的二进制/未知类型文件，会自动附带十六进制预览，确保模型“看得到文件内容”
 

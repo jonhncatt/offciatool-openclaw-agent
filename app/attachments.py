@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import io
+import re
+from html import unescape
 from pathlib import Path
 
 
@@ -38,6 +40,88 @@ def _extract_docx(path: Path, max_chars: int) -> str:
     return _truncate(text, max_chars)
 
 
+def _html_to_text(html: str) -> str:
+    raw = html or ""
+    raw = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", raw)
+    raw = re.sub(r"(?i)<br\\s*/?>", "\n", raw)
+    raw = re.sub(r"(?i)</(p|div|li|tr|h1|h2|h3|h4|h5|h6|section|article)>", "\n", raw)
+    raw = re.sub(r"(?s)<[^>]+>", " ", raw)
+    raw = unescape(raw)
+    lines: list[str] = []
+    for line in raw.splitlines():
+        normalized = re.sub(r"\s+", " ", line).strip()
+        if normalized:
+            lines.append(normalized)
+    return "\n".join(lines)
+
+
+def _extract_outlook_msg(path: Path, max_chars: int) -> str:
+    try:
+        import extract_msg  # lazy import
+    except Exception as exc:
+        raise RuntimeError(
+            "解析 .msg 需要依赖 extract-msg。请执行 `pip install -r requirements.txt` 后重试。"
+        ) from exc
+
+    msg = extract_msg.Message(str(path))
+    try:
+        subject = (msg.subject or "").strip()
+        sender = (msg.sender or "").strip()
+        to = (msg.to or "").strip()
+        cc = (msg.cc or "").strip()
+        date = str(msg.date or "").strip()
+
+        body = (msg.body or "").strip()
+        if not body:
+            html_body = msg.htmlBody
+            if isinstance(html_body, bytes):
+                html_body = html_body.decode("utf-8", errors="ignore")
+            if isinstance(html_body, str) and html_body.strip():
+                body = _html_to_text(html_body)
+
+        attachment_lines: list[str] = []
+        for idx, att in enumerate(getattr(msg, "attachments", []) or [], start=1):
+            name = (
+                (getattr(att, "longFilename", None) or "")
+                or (getattr(att, "filename", None) or "")
+                or (getattr(att, "name", None) or "")
+                or f"attachment_{idx}"
+            )
+            data = getattr(att, "data", None)
+            size = len(data) if isinstance(data, (bytes, bytearray)) else None
+            if size is not None:
+                attachment_lines.append(f"- {name} ({size} bytes)")
+            else:
+                attachment_lines.append(f"- {name}")
+
+        sections: list[str] = ["[Outlook MSG 邮件解析]"]
+        if subject:
+            sections.append(f"主题: {subject}")
+        if sender:
+            sections.append(f"发件人: {sender}")
+        if to:
+            sections.append(f"收件人: {to}")
+        if cc:
+            sections.append(f"抄送: {cc}")
+        if date:
+            sections.append(f"时间: {date}")
+        if attachment_lines:
+            sections.append("附件列表:")
+            sections.extend(attachment_lines)
+        if body:
+            sections.append("\n--- 正文 ---\n")
+            sections.append(body)
+
+        return _truncate("\n".join(sections).strip(), max_chars)
+    finally:
+        close = getattr(msg, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+
+
 def extract_document_text(path: str, max_chars: int) -> str | None:
     file_path = Path(path)
     suffix = file_path.suffix.lower()
@@ -66,6 +150,8 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
             return _extract_pdf(file_path, max_chars)
         if suffix == ".docx":
             return _extract_docx(file_path, max_chars)
+        if suffix == ".msg":
+            return _extract_outlook_msg(file_path, max_chars)
     except Exception as exc:
         return f"[文档解析失败: {exc}]"
 
