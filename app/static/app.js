@@ -735,6 +735,7 @@ async function sendMessage() {
         detail: "已生成 payload，正在调用 /api/chat/stream",
       },
     ];
+    let heartbeatCount = 0;
     renderRunTrace(liveTrace, liveToolEvents);
     renderLlmFlow(liveFlow);
     setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
@@ -772,6 +773,15 @@ async function sendMessage() {
         if (!item || typeof item !== "object") return;
         liveToolEvents.push(item);
         renderRunTrace(liveTrace, liveToolEvents);
+      },
+      onHeartbeat: () => {
+        heartbeatCount += 1;
+        if (heartbeatCount === 1 || heartbeatCount % 3 === 0) {
+          liveTrace.push(
+            `后端心跳：仍在处理中（约 ${heartbeatCount * 10}s 无新事件，连接正常）`
+          );
+          renderRunTrace(liveTrace, liveToolEvents);
+        }
       },
     });
     if (typeof stopWaitTicker === "function") {

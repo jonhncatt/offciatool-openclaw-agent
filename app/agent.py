@@ -37,8 +37,9 @@ _NEWS_HINTS = (
     "ニュース",
 )
 
-_ATTACHMENT_INLINE_MAX_BYTES = 2 * 1024 * 1024
-_ATTACHMENT_INLINE_MAX_CHARS_SOFT = 120000
+_ATTACHMENT_INLINE_MAX_BYTES = 1 * 1024 * 1024
+_ATTACHMENT_INLINE_MAX_CHARS_SOFT = 80000
+_FOLLOWUP_INLINE_MAX_BYTES = 256 * 1024
 
 
 class RunShellArgs(BaseModel):
@@ -291,7 +292,11 @@ class OfficeAgent:
                 messages.append(self._HumanMessage(content=text))
         add_trace(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
 
-        user_content, attachment_note, attachment_issues = self._build_user_content(user_message, attachment_metas)
+        user_content, attachment_note, attachment_issues = self._build_user_content(
+            user_message,
+            attachment_metas,
+            history_turn_count=len(history_turns),
+        )
         messages.append(self._HumanMessage(content=user_content))
         tool_events: list[ToolEvent] = []
         if attachment_metas:
@@ -756,7 +761,7 @@ class OfficeAgent:
         return json.dumps(result, ensure_ascii=False)
 
     def _build_user_content(
-        self, user_message: str, attachment_metas: list[dict[str, Any]]
+        self, user_message: str, attachment_metas: list[dict[str, Any]], history_turn_count: int = 0
     ) -> tuple[list[dict[str, Any]], str, list[str]]:
         parts: list[dict[str, Any]] = [{"type": "text", "text": user_message}]
         notes: list[str] = []
@@ -787,6 +792,23 @@ class OfficeAgent:
             )
 
             if kind == "document":
+                if history_turn_count > 0 and file_size > _FOLLOWUP_INLINE_MAX_BYTES:
+                    parts.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
+                                f"{local_path_line}{file_size_line}{zip_hint_line}"
+                                "如需正文，请调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取。"
+                            ),
+                        }
+                    )
+                    notes.append(f"文档(跟进-路径):{name}")
+                    issues.append(
+                        f"{name} 在跟进轮次仅提供路径（{self._format_bytes(file_size)}），可按需再读，避免重复注入大文本。"
+                    )
+                    continue
+
                 if file_size > _ATTACHMENT_INLINE_MAX_BYTES:
                     parts.append(
                         {
