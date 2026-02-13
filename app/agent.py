@@ -61,6 +61,15 @@ class CopyFileArgs(BaseModel):
     create_dirs: bool = True
 
 
+class ExtractZipArgs(BaseModel):
+    zip_path: str
+    dst_dir: str = Field(default="", description="Destination directory. Empty means sibling folder next to zip file.")
+    overwrite: bool = True
+    create_dirs: bool = True
+    max_entries: int = Field(default=20000, ge=1, le=100000)
+    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
+
+
 class WriteTextFileArgs(BaseModel):
     path: str
     content: str
@@ -223,6 +232,7 @@ class OfficeAgent:
                     "read_text_file 对本地 PDF/DOCX/MSG 会自动提取文本；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
+                    "解压 zip 文件优先使用 extract_zip；"
                     "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
                     "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
                     "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
@@ -589,6 +599,12 @@ class OfficeAgent:
                 func=self._copy_file_tool,
             ),
             self._StructuredTool.from_function(
+                name="extract_zip",
+                description="Extract a local .zip archive into a target directory (safe, with limits).",
+                args_schema=ExtractZipArgs,
+                func=self._extract_zip_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="write_text_file",
                 description="Create or overwrite a UTF-8 text file in workspace.",
                 args_schema=WriteTextFileArgs,
@@ -640,6 +656,25 @@ class OfficeAgent:
             dst_path=dst_path,
             overwrite=overwrite,
             create_dirs=create_dirs,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _extract_zip_tool(
+        self,
+        zip_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_entries: int = 20000,
+        max_total_bytes: int = 524288000,
+    ) -> str:
+        result = self.tools.extract_zip(
+            zip_path=zip_path,
+            dst_dir=dst_dir,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
         )
         return json.dumps(result, ensure_ascii=False)
 

@@ -101,12 +101,13 @@ cd $HOME\Desktop\officetool
 
 ### Agent 工具调用
 
-默认开放 9 个工具：
+默认开放 10 个工具：
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
 - `read_text_file`: 读本地文本/文档（PDF/DOCX/MSG 自动提取文本，支持 `start_char + max_chars` 分块）
 - `copy_file`: 二进制安全复制文件（推荐用于“复制整个文件”）
+- `extract_zip`: 解压本地 zip 到指定目录（支持覆盖开关和安全限制）
 - `write_text_file`: 新建/覆盖写文本文件
 - `replace_in_file`: 按目标文本做替换（支持一次或多次）
 - `search_web`: 关键词联网搜索，返回候选链接与摘要（优先用于“先找链接”）
@@ -127,6 +128,7 @@ cd $HOME\Desktop\officetool
 - 如遇证书链异常，可设置 `OFFICETOOL_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
 - 若未配置上述参数且遇到证书校验失败，`fetch_web` 也会自动降级重试一次（返回 `warning` 提示）
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）
+- 解压 zip 请使用 `extract_zip`（内置路径穿越防护与体积/文件数限制）
 - 大文件建议让助手按块读取（例如每次 `max_chars=200000`，再用下一块 `start_char=end_char` 继续）
 
 ### 上下文控制

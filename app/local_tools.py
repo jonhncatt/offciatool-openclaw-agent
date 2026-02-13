@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -563,6 +564,36 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "extract_zip",
+                "description": (
+                    "Extract a local .zip archive into a target directory in allowed roots. "
+                    "Supports overwrite controls and safety limits."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "zip_path": {"type": "string", "description": "Path to local .zip file"},
+                        "dst_dir": {
+                            "type": "string",
+                            "description": "Destination directory. Empty means same name next to zip file.",
+                            "default": "",
+                        },
+                        "overwrite": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                        "max_entries": {"type": "integer", "minimum": 1, "maximum": 100000, "default": 20000},
+                        "max_total_bytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 2147483648,
+                            "default": 524288000,
+                        },
+                    },
+                    "required": ["zip_path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "write_text_file",
                 "description": "Create or overwrite a UTF-8 text file in workspace.",
                 "parameters": {
@@ -662,6 +693,8 @@ class LocalToolExecutor:
             return self.read_text_file(**arguments)
         if name == "copy_file":
             return self.copy_file(**arguments)
+        if name == "extract_zip":
+            return self.extract_zip(**arguments)
         if name == "write_text_file":
             return self.write_text_file(**arguments)
         if name == "replace_in_file":
@@ -850,6 +883,100 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"copy_file failed: {exc}"}
+
+    def extract_zip(
+        self,
+        zip_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_entries: int = 20000,
+        max_total_bytes: int = 524288000,
+    ) -> dict[str, Any]:
+        try:
+            zip_real = _resolve_workspace_path(self.config, zip_path)
+            if not zip_real.exists():
+                return {"ok": False, "error": f"Zip path not found: {zip_path}"}
+            if not zip_real.is_file():
+                return {"ok": False, "error": f"Zip path is not a file: {zip_path}"}
+
+            dst_raw = (dst_dir or "").strip()
+            if not dst_raw:
+                dst_raw = str(zip_real.with_suffix(""))
+
+            dst_real = _resolve_workspace_path(self.config, dst_raw)
+            if dst_real.exists() and dst_real.is_file():
+                return {"ok": False, "error": f"Destination is a file, not directory: {dst_raw}"}
+            if not dst_real.exists():
+                if not create_dirs:
+                    return {"ok": False, "error": f"Destination directory not found: {dst_real}"}
+                dst_real.mkdir(parents=True, exist_ok=True)
+
+            entry_limit = max(1, min(100000, int(max_entries)))
+            total_limit = max(1024, min(2147483648, int(max_total_bytes)))
+
+            extracted_files = 0
+            skipped_files = 0
+            extracted_bytes = 0
+
+            with zipfile.ZipFile(zip_real, "r") as zf:
+                infos = zf.infolist()
+                if len(infos) > entry_limit:
+                    return {
+                        "ok": False,
+                        "error": f"Zip entries exceed max_entries limit ({len(infos)} > {entry_limit}).",
+                    }
+
+                total_uncompressed = sum(int(getattr(i, "file_size", 0) or 0) for i in infos)
+                if total_uncompressed > total_limit:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Zip uncompressed size exceeds max_total_bytes "
+                            f"({total_uncompressed} > {total_limit})."
+                        ),
+                    }
+
+                for info in infos:
+                    name = (info.filename or "").replace("\\", "/")
+                    if not name:
+                        continue
+
+                    rel = Path(name)
+                    if rel.is_absolute() or ".." in rel.parts:
+                        return {"ok": False, "error": f"Unsafe zip entry path detected: {name}"}
+
+                    target = (dst_real / rel).resolve()
+                    if not _is_within(target, dst_real):
+                        return {"ok": False, "error": f"Unsafe zip entry path detected: {name}"}
+
+                    if info.is_dir():
+                        target.mkdir(parents=True, exist_ok=True)
+                        continue
+
+                    if target.exists() and not overwrite:
+                        skipped_files += 1
+                        continue
+
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info, "r") as src, open(target, "wb") as out:
+                        shutil.copyfileobj(src, out)
+                    extracted_files += 1
+                    extracted_bytes += int(target.stat().st_size)
+
+            return {
+                "ok": True,
+                "zip_path": str(zip_real),
+                "dst_dir": str(dst_real),
+                "files_extracted": extracted_files,
+                "files_skipped": skipped_files,
+                "bytes_extracted": extracted_bytes,
+                "overwrite": bool(overwrite),
+            }
+        except zipfile.BadZipFile:
+            return {"ok": False, "error": f"Invalid zip archive: {zip_path}"}
+        except Exception as exc:
+            return {"ok": False, "error": f"extract_zip failed: {exc}"}
 
     def write_text_file(
         self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True
