@@ -4,6 +4,7 @@ const state = {
   sending: false,
   attachments: [],
 };
+const SESSION_STORAGE_KEY = "officetool.session_id";
 
 const chatList = document.getElementById("chatList");
 const fileInput = document.getElementById("fileInput");
@@ -115,6 +116,59 @@ function formatNumberedLines(title, items) {
 
 function refreshSession() {
   sessionIdView.textContent = state.sessionId || "(未创建)";
+  try {
+    if (state.sessionId) {
+      window.localStorage.setItem(SESSION_STORAGE_KEY, state.sessionId);
+    } else {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  } catch {}
+}
+
+function getStoredSessionId() {
+  try {
+    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    const val = (raw || "").trim();
+    return val || null;
+  } catch {
+    return null;
+  }
+}
+
+function clearChat() {
+  if (!chatList) return;
+  chatList.innerHTML = "";
+}
+
+async function restoreSessionIfPossible() {
+  const cached = getStoredSessionId();
+  if (!cached) return false;
+
+  state.sessionId = cached;
+  refreshSession();
+
+  try {
+    const res = await fetch(`/api/session/${encodeURIComponent(cached)}?max_turns=120`);
+    if (!res.ok) {
+      if (res.status === 404) {
+        state.sessionId = null;
+        refreshSession();
+      }
+      return false;
+    }
+    const data = await res.json();
+    const turns = Array.isArray(data?.turns) ? data.turns : [];
+    clearChat();
+    addBubble("system", `已恢复会话：${cached}（历史 ${data?.turn_count || turns.length} 条）`);
+    turns.forEach((turn) => {
+      const role = turn?.role === "assistant" ? "assistant" : "user";
+      const text = String(turn?.text || "").trim();
+      if (text) addBubble(role, text);
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function renderRunSteps(activeStepId, isError = false) {
@@ -490,6 +544,7 @@ newSessionBtn.addEventListener("click", async () => {
   await createSession();
   state.attachments = [];
   refreshFileList();
+  clearChat();
   addBubble("system", "已新建会话。", null);
 });
 
@@ -522,10 +577,13 @@ if (clearStatsBtn) {
   renderLlmFlow([]);
   try {
     const health = await fetch("/api/health").then((r) => r.json());
-    addBubble("system", `服务已启动，默认模型：${health.model_default}`);
     modelInput.placeholder = health.model_default || MODE_PRESETS.general.model;
     if (!modelInput.value) {
       modelInput.value = health.model_default || MODE_PRESETS.general.model;
+    }
+    const restored = await restoreSessionIfPossible();
+    if (!restored) {
+      addBubble("system", `服务已启动，默认模型：${health.model_default}`);
     }
     await refreshTokenStatsFromServer();
   } catch {

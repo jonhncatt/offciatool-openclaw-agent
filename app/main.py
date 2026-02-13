@@ -16,6 +16,8 @@ from app.models import (
     ClearStatsResponse,
     HealthResponse,
     NewSessionResponse,
+    SessionDetailResponse,
+    SessionTurn,
     TokenStatsResponse,
     TokenTotals,
     TokenUsage,
@@ -76,6 +78,36 @@ def health() -> HealthResponse:
 def create_session() -> NewSessionResponse:
     session = session_store.create()
     return NewSessionResponse(session_id=session["id"])
+
+
+@app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
+def get_session(session_id: str, max_turns: int = 200) -> SessionDetailResponse:
+    loaded = session_store.load(session_id)
+    if not loaded:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    turns_raw = loaded.get("turns", [])
+    if not isinstance(turns_raw, list):
+        turns_raw = []
+    limited_turns = turns_raw[-max(1, min(2000, max_turns)) :]
+    turns: list[SessionTurn] = []
+    for item in limited_turns:
+        if not isinstance(item, dict):
+            continue
+        turns.append(
+            SessionTurn(
+                role=str(item.get("role") or "user"),
+                text=str(item.get("text") or ""),
+                created_at=str(item.get("created_at")) if item.get("created_at") else None,
+            )
+        )
+
+    return SessionDetailResponse(
+        session_id=session_id,
+        summary=str(loaded.get("summary") or ""),
+        turn_count=len(turns_raw),
+        turns=turns,
+    )
 
 
 @app.post("/api/upload", response_model=UploadResponse)

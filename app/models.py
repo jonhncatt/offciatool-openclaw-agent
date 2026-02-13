@@ -81,6 +81,19 @@ class NewSessionResponse(BaseModel):
     session_id: str
 
 
+class SessionTurn(BaseModel):
+    role: str
+    text: str
+    created_at: str | None = None
+
+
+class SessionDetailResponse(BaseModel):
+    session_id: str
+    summary: str = ""
+    turn_count: int = 0
+    turns: list[SessionTurn] = Field(default_factory=list)
+
+
 class HealthResponse(BaseModel):
     ok: bool
     model_default: str

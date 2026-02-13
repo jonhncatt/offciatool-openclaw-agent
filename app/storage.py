@@ -41,14 +41,20 @@ class SessionStore:
         self.save(session)
         return session
 
+    def load(self, session_id: str) -> dict[str, Any] | None:
+        path = self._path(session_id)
+        if not path.exists():
+            return None
+        with self._lock:
+            return json.loads(path.read_text(encoding="utf-8"))
+
     def load_or_create(self, session_id: str | None) -> dict[str, Any]:
         if not session_id:
             return self.create()
-        path = self._path(session_id)
-        if not path.exists():
+        loaded = self.load(session_id)
+        if not loaded:
             return self.create()
-        with self._lock:
-            return json.loads(path.read_text(encoding="utf-8"))
+        return loaded
 
     def save(self, session: dict[str, Any]) -> None:
         session["updated_at"] = now_iso()
