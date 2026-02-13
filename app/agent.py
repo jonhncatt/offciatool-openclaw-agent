@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field
@@ -203,6 +203,7 @@ class OfficeAgent:
         user_message: str,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
+        progress_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[str, list[ToolEvent], str, list[str], list[str], list[dict[str, Any]], dict[str, int]]:
         model = settings.model or self.config.default_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
@@ -215,15 +216,31 @@ class OfficeAgent:
         debug_raw = bool(getattr(settings, "debug_raw", False))
         debug_limit = 120000 if debug_raw else 3200
 
+        def emit_progress(event: str, **payload: Any) -> None:
+            if not progress_cb:
+                return
+            try:
+                progress_cb({"event": event, **payload})
+            except Exception:
+                pass
+
+        def add_trace(message: str) -> None:
+            execution_trace.append(message)
+            emit_progress("trace", message=message, index=len(execution_trace))
+
         def add_debug(stage: str, title: str, detail: str) -> None:
-            debug_flow.append(
-                {
-                    "step": len(debug_flow) + 1,
-                    "stage": stage,
-                    "title": title,
-                    "detail": self._shorten(detail, debug_limit),
-                }
-            )
+            item = {
+                "step": len(debug_flow) + 1,
+                "stage": stage,
+                "title": title,
+                "detail": self._shorten(detail, debug_limit),
+            }
+            debug_flow.append(item)
+            emit_progress("debug", item=item)
+
+        def add_tool_event(event: ToolEvent) -> None:
+            tool_events.append(event)
+            emit_progress("tool_event", item=event.model_dump())
 
         messages: list[Any] = [
             self._SystemMessage(
@@ -256,12 +273,12 @@ class OfficeAgent:
                 )
             )
         ]
-        execution_trace.append(f"工具开关: {'开启' if settings.enable_tools else '关闭'}。")
-        execution_trace.append(f"可访问根目录: {allowed_roots_text}")
+        add_trace(f"工具开关: {'开启' if settings.enable_tools else '关闭'}。")
+        add_trace(f"可访问根目录: {allowed_roots_text}")
 
         if summary.strip():
             messages.append(self._SystemMessage(content=f"历史摘要:\n{summary}"))
-            execution_trace.append("已加载历史摘要，减少上下文占用。")
+            add_trace("已加载历史摘要，减少上下文占用。")
 
         for turn in history_turns[-settings.max_context_turns :]:
             role = turn.get("role", "user")
@@ -272,26 +289,26 @@ class OfficeAgent:
                 messages.append(self._AIMessage(content=text))
             else:
                 messages.append(self._HumanMessage(content=text))
-        execution_trace.append(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
+        add_trace(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
 
         user_content, attachment_note, attachment_issues = self._build_user_content(user_message, attachment_metas)
         messages.append(self._HumanMessage(content=user_content))
         tool_events: list[ToolEvent] = []
         if attachment_metas:
-            execution_trace.append(f"已处理 {len(attachment_metas)} 个附件输入。")
+            add_trace(f"已处理 {len(attachment_metas)} 个附件输入。")
         for issue in attachment_issues:
-            execution_trace.append(f"附件提示: {issue}")
+            add_trace(f"附件提示: {issue}")
 
         prefetch_payload = self._auto_prefetch_web(user_message, settings.enable_tools)
         if prefetch_payload:
             messages.append(self._SystemMessage(content=prefetch_payload["context"]))
-            execution_trace.append(
+            add_trace(
                 f"已自动预搜索网络候选: {prefetch_payload.get('count', 0)} 条（query={prefetch_payload['query']}）。"
             )
             warning = prefetch_payload.get("warning")
             if warning:
-                execution_trace.append(f"预搜索提示: {warning}")
-            tool_events.append(
+                add_trace(f"预搜索提示: {warning}")
+            add_tool_event(
                 ToolEvent(
                     name="search_web(auto_prefetch)",
                     input={"query": prefetch_payload["query"], "max_results": prefetch_payload.get("count", 0)},
@@ -324,7 +341,7 @@ class OfficeAgent:
             ),
         )
 
-        execution_trace.append("开始模型推理。")
+        add_trace("开始模型推理。")
 
         try:
             ai_msg, runner = self._invoke_chat_with_runner(
@@ -340,7 +357,7 @@ class OfficeAgent:
                 detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
             )
         except Exception as exc:
-            execution_trace.append(f"模型请求失败: {exc}")
+            add_trace(f"模型请求失败: {exc}")
             add_debug(stage="llm_error", title="LLM 请求失败", detail=str(exc))
             return (
                 f"请求模型失败: {exc}",
@@ -366,14 +383,14 @@ class OfficeAgent:
 
                 result = self.tools.execute(name, arguments)
                 result_json = json.dumps(result, ensure_ascii=False)
-                execution_trace.append(f"执行工具: {name}")
+                add_trace(f"执行工具: {name}")
                 add_debug(
                     stage="llm_to_backend",
                     title=f"LLM -> 后端 工具调用 {name}",
                     detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
                 )
 
-                tool_events.append(
+                add_tool_event(
                     ToolEvent(
                         name=name,
                         input=arguments,
@@ -414,7 +431,7 @@ class OfficeAgent:
                     detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
                 )
             except Exception as exc:
-                execution_trace.append(f"工具后续推理失败: {exc}")
+                add_trace(f"工具后续推理失败: {exc}")
                 add_debug(stage="llm_error", title="工具后续推理失败", detail=str(exc))
                 return (
                     f"工具执行后续推理失败: {exc}",
@@ -429,7 +446,7 @@ class OfficeAgent:
         text = self._content_to_text(getattr(ai_msg, "content", ""))
         if not text.strip():
             text = "模型未返回可见文本。"
-        execution_trace.append("已生成最终答复。")
+        add_trace("已生成最终答复。")
         add_debug(
             stage="llm_final",
             title="LLM 最终输出",

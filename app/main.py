@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
+import queue
 from pathlib import Path
+import threading
+import time
+from typing import Any, Callable
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.agent import OfficeAgent
@@ -168,36 +173,65 @@ def clear_stats() -> ClearStatsResponse:
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
+    return _process_chat_request(req)
+
+
+def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
+    if not progress_cb:
+        return
+    try:
+        progress_cb({"event": event, **payload})
+    except Exception:
+        pass
+
+
+def _process_chat_request(
+    req: ChatRequest, progress_cb: Callable[[dict[str, Any]], None] | None = None
+) -> ChatResponse:
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is required")
+    _emit_progress(progress_cb, "stage", code="backend_start", detail="后端已接收请求，开始处理。")
 
     session = session_store.load_or_create(req.session_id)
+    _emit_progress(progress_cb, "stage", code="session_ready", detail=f"会话已就绪: {session.get('id')}")
     agent = get_agent()
     summarized = agent.maybe_compact_session(session, req.settings.max_context_turns)
+    if summarized:
+        _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。")
 
     attachments = upload_store.get_many(req.attachment_ids)
+    _emit_progress(
+        progress_cb,
+        "stage",
+        code="attachments_ready",
+        detail=f"附件检查完成: 请求 {len(req.attachment_ids)} 个，命中 {len(attachments)} 个。",
+    )
     found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
     missing_attachment_ids = [file_id for file_id in req.attachment_ids if file_id not in found_attachment_ids]
 
+    _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始模型推理与工具调度。")
     text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, token_usage = agent.run_chat(
         history_turns=session.get("turns", []),
         summary=session.get("summary", ""),
         user_message=req.message,
         attachment_metas=attachments,
         settings=req.settings,
+        progress_cb=progress_cb,
     )
+    _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。")
     if missing_attachment_ids:
-        execution_trace.append(
-            f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
-        )
-        debug_flow.append(
-            {
-                "step": len(debug_flow) + 1,
-                "stage": "backend_warning",
-                "title": "附件检查",
-                "detail": f"检测到 {len(missing_attachment_ids)} 个附件 ID 丢失，已提示前端重新上传。",
-            }
-        )
+        warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
+        execution_trace.append(warning_msg)
+        _emit_progress(progress_cb, "trace", message=warning_msg, index=len(execution_trace))
+
+        debug_item = {
+            "step": len(debug_flow) + 1,
+            "stage": "backend_warning",
+            "title": "附件检查",
+            "detail": f"检测到 {len(missing_attachment_ids)} 个附件 ID 丢失，已提示前端重新上传。",
+        }
+        debug_flow.append(debug_item)
+        _emit_progress(progress_cb, "debug", item=debug_item)
 
     user_text = req.message.strip()
     if attachment_note:
@@ -211,6 +245,7 @@ def chat(req: ChatRequest) -> ChatResponse:
     )
     session_store.append_turn(session, role="assistant", text=text)
     session_store.save(session)
+    _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。")
 
     selected_model = req.settings.model or config.default_model
     pricing_meta = estimate_usage_cost(
@@ -220,44 +255,50 @@ def chat(req: ChatRequest) -> ChatResponse:
     )
     token_usage = {**token_usage, **pricing_meta}
     if pricing_meta.get("pricing_known"):
-        execution_trace.append(
+        pricing_trace = (
             "费用估算: "
             f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
             f"output ${pricing_meta.get('output_price_per_1m')}/1M."
         )
-        debug_flow.append(
-            {
-                "step": len(debug_flow) + 1,
-                "stage": "backend_pricing",
-                "title": "费用估算",
-                "detail": (
-                    f"按 {pricing_meta.get('pricing_model')} 计价："
-                    f"in ${pricing_meta.get('input_price_per_1m')}/1M, "
-                    f"out ${pricing_meta.get('output_price_per_1m')}/1M, "
-                    f"本轮约 ${pricing_meta.get('estimated_cost_usd')}."
-                ),
-            }
-        )
+        execution_trace.append(pricing_trace)
+        _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace))
+
+        pricing_debug = {
+            "step": len(debug_flow) + 1,
+            "stage": "backend_pricing",
+            "title": "费用估算",
+            "detail": (
+                f"按 {pricing_meta.get('pricing_model')} 计价："
+                f"in ${pricing_meta.get('input_price_per_1m')}/1M, "
+                f"out ${pricing_meta.get('output_price_per_1m')}/1M, "
+                f"本轮约 ${pricing_meta.get('estimated_cost_usd')}."
+            ),
+        }
+        debug_flow.append(pricing_debug)
+        _emit_progress(progress_cb, "debug", item=pricing_debug)
     else:
-        execution_trace.append(f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。")
-        debug_flow.append(
-            {
-                "step": len(debug_flow) + 1,
-                "stage": "backend_pricing",
-                "title": "费用估算",
-                "detail": f"模型 {selected_model} 未匹配内置价格表，仅统计 token。",
-            }
-        )
+        pricing_trace = f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。"
+        execution_trace.append(pricing_trace)
+        _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace))
+
+        pricing_debug = {
+            "step": len(debug_flow) + 1,
+            "stage": "backend_pricing",
+            "title": "费用估算",
+            "detail": f"模型 {selected_model} 未匹配内置价格表，仅统计 token。",
+        }
+        debug_flow.append(pricing_debug)
+        _emit_progress(progress_cb, "debug", item=pricing_debug)
 
     stats_snapshot = token_stats_store.add_usage(
         session_id=session["id"],
         usage=token_usage,
         model=selected_model,
     )
+    _emit_progress(progress_cb, "stage", code="stats_saved", detail="Token 统计已更新。")
     session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
     global_totals_raw = stats_snapshot.get("totals", {})
-
-    return ChatResponse(
+    response = ChatResponse(
         session_id=session["id"],
         text=text,
         tool_events=tool_events,
@@ -271,3 +312,62 @@ def chat(req: ChatRequest) -> ChatResponse:
         turn_count=len(session.get("turns", [])),
         summarized=summarized,
     )
+    _emit_progress(progress_cb, "stage", code="ready", detail="本轮结果已准备完成。")
+    return response
+
+
+def _sse_pack(event: str, payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, default=str)
+    return f"event: {event}\ndata: {raw}\n\n"
+
+
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest) -> StreamingResponse:
+    def event_stream():
+        events: queue.Queue[dict[str, Any]] = queue.Queue()
+        done_event = threading.Event()
+
+        def emit(payload: dict[str, Any]) -> None:
+            event_name = str(payload.get("event") or "message")
+            data = {k: v for k, v in payload.items() if k != "event"}
+            events.put({"event": event_name, "payload": data})
+
+        def worker() -> None:
+            try:
+                response = _process_chat_request(req, progress_cb=emit)
+                events.put({"event": "final", "payload": {"response": response.model_dump()}})
+            except HTTPException as exc:
+                events.put(
+                    {
+                        "event": "error",
+                        "payload": {"status_code": exc.status_code, "detail": str(exc.detail or "HTTP error")},
+                    }
+                )
+            except Exception as exc:
+                events.put({"event": "error", "payload": {"status_code": 500, "detail": str(exc)}})
+            finally:
+                done_event.set()
+                events.put({"event": "done", "payload": {"ok": True}})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        while True:
+            try:
+                item = events.get(timeout=10.0)
+            except queue.Empty:
+                yield _sse_pack("heartbeat", {"ts": int(time.time())})
+                if done_event.is_set():
+                    break
+                continue
+            event_name = str(item.get("event") or "message")
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            yield _sse_pack(event_name, payload)
+            if event_name == "done":
+                break
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)

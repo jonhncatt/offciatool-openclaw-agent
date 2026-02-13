@@ -385,6 +385,125 @@ function startWaitStageTicker(totalAttachmentBytes = 0) {
   return () => window.clearInterval(timer);
 }
 
+function parseSseEventBlock(rawBlock) {
+  const block = String(rawBlock || "").trim();
+  if (!block) return null;
+  const lines = block.split("\n");
+  let event = "message";
+  const dataLines = [];
+  lines.forEach((line) => {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim() || "message";
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  });
+  if (!dataLines.length) return null;
+  const rawData = dataLines.join("\n");
+  let data = rawData;
+  try {
+    data = JSON.parse(rawData);
+  } catch {}
+  return { event, data };
+}
+
+async function streamChatRequest(body, handlers = {}) {
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      if (data?.detail) detail = String(data.detail);
+    } catch {}
+    throw new Error(detail);
+  }
+
+  const contentType = String(res.headers.get("content-type") || "").toLowerCase();
+  if (!contentType.includes("text/event-stream") || !res.body) {
+    return await res.json();
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let finalResponse = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    while (true) {
+      const splitAt = buffer.indexOf("\n\n");
+      if (splitAt < 0) break;
+      const block = buffer.slice(0, splitAt);
+      buffer = buffer.slice(splitAt + 2);
+      const parsed = parseSseEventBlock(block);
+      if (!parsed) continue;
+
+      const event = parsed.event;
+      const payload = parsed.data && typeof parsed.data === "object" ? parsed.data : { detail: String(parsed.data || "") };
+
+      if (event === "stage") {
+        handlers.onStage?.(payload);
+        continue;
+      }
+      if (event === "trace") {
+        handlers.onTrace?.(payload);
+        continue;
+      }
+      if (event === "debug") {
+        handlers.onDebug?.(payload);
+        continue;
+      }
+      if (event === "tool_event") {
+        handlers.onToolEvent?.(payload);
+        continue;
+      }
+      if (event === "heartbeat") {
+        handlers.onHeartbeat?.(payload);
+        continue;
+      }
+      if (event === "error") {
+        throw new Error(String(payload?.detail || "stream error"));
+      }
+      if (event === "final") {
+        finalResponse = payload?.response || null;
+        handlers.onFinal?.(finalResponse);
+        continue;
+      }
+      if (event === "done") {
+        return finalResponse;
+      }
+    }
+  }
+
+  if (finalResponse) return finalResponse;
+  throw new Error("流式响应中断：未收到最终结果。");
+}
+
+function applyBackendStage(payload) {
+  const code = String(payload?.code || "").trim();
+  const detail = String(payload?.detail || "").trim();
+  if (!code) return;
+
+  if (code === "backend_start" || code === "session_ready" || code === "attachments_ready") {
+    setRunStage("进行中", detail || "后端处理中", "prepare", "working");
+    return;
+  }
+  if (code === "agent_run_start") {
+    setRunStage("进行中", detail || "模型推理中", "wait", "working");
+    return;
+  }
+  if (code === "agent_run_done" || code === "session_saved" || code === "stats_saved" || code === "ready") {
+    setRunStage("进行中", detail || "后处理中", "parse", "working");
+  }
+}
+
 function renderRunPayload(body, attachmentNames) {
   if (!runPayloadView) return;
   const settings = body?.settings || {};
@@ -606,36 +725,62 @@ async function sendMessage() {
       body,
       state.attachments.map((x) => x.name)
     );
-    renderRunTrace(["客户端已组装请求，等待发送。"], []);
-    renderLlmFlow([
+    const liveTrace = ["客户端已组装请求，等待发送。"];
+    const liveToolEvents = [];
+    const liveFlow = [
       {
         step: 1,
         stage: "frontend_prepare",
         title: "前端准备请求",
-        detail: "已生成 payload，正在调用 /api/chat",
+        detail: "已生成 payload，正在调用 /api/chat/stream",
       },
-    ]);
+    ];
+    renderRunTrace(liveTrace, liveToolEvents);
+    renderLlmFlow(liveFlow);
     setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
     const totalAttachmentBytes = state.attachments.reduce((sum, item) => {
       const size = Number(item?.size || 0);
       return sum + (Number.isFinite(size) ? size : 0);
     }, 0);
     stopWaitTicker = startWaitStageTicker(totalAttachmentBytes);
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+    const data = await streamChatRequest(body, {
+      onStage: (payload) => {
+        const code = String(payload?.code || "");
+        if (
+          typeof stopWaitTicker === "function" &&
+          (code === "agent_run_done" || code === "session_saved" || code === "stats_saved" || code === "ready")
+        ) {
+          stopWaitTicker();
+          stopWaitTicker = null;
+        }
+        applyBackendStage(payload);
+      },
+      onTrace: (payload) => {
+        const line = String(payload?.message || "").trim();
+        if (!line) return;
+        liveTrace.push(line);
+        renderRunTrace(liveTrace, liveToolEvents);
+      },
+      onDebug: (payload) => {
+        const item = payload?.item;
+        if (!item || typeof item !== "object") return;
+        liveFlow.push(item);
+        renderLlmFlow(liveFlow);
+      },
+      onToolEvent: (payload) => {
+        const item = payload?.item;
+        if (!item || typeof item !== "object") return;
+        liveToolEvents.push(item);
+        renderRunTrace(liveTrace, liveToolEvents);
+      },
     });
     if (typeof stopWaitTicker === "function") {
       stopWaitTicker();
       stopWaitTicker = null;
     }
-    setRunStage("进行中", "收到服务响应，正在解析", "parse", "working");
-
-    const data = await res.json();
-    if (!res.ok) {
-      const msg = data?.detail || JSON.stringify(data);
-      throw new Error(msg);
+    setRunStage("进行中", "收到最终结果，正在整理展示", "parse", "working");
+    if (!data || typeof data !== "object") {
+      throw new Error("流式响应异常：未收到最终结果。");
     }
 
     state.sessionId = data.session_id;

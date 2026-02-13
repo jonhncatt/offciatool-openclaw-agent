@@ -6,6 +6,7 @@
 - 可选本地工具执行（读写文件、白名单命令、联网抓取）
 - 会话自动摘要压缩，避免上下文无限增长
 - 页面显示“执行轨迹”，可见每次调用实际做了什么
+- 对话请求支持流式进度（SSE），可实时看到后端阶段、工具调用与执行轨迹更新
 - 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
 - 可控输出长度（short/normal/long）和 token 上限
 - LLM 驱动层使用 `langchain_openai`（支持 OpenAI 兼容网关）
@@ -131,6 +132,7 @@ cd $HOME\Desktop\officetool
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）
 - 解压 zip 请使用 `extract_zip`（内置路径穿越防护与体积/文件数限制）
 - 大文件建议让助手按块读取（例如每次 `max_chars=200000`，再用下一块 `start_char=end_char` 继续）
+- 前端默认走 `/api/chat/stream` 实时流式接口；如需非流式可继续使用 `/api/chat`
 
 ### 上下文控制
 
