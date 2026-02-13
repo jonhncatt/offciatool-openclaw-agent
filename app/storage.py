@@ -122,6 +122,17 @@ class SessionStore:
 
         return out
 
+    def delete(self, session_id: str) -> bool:
+        path = self._path(session_id)
+        if not path.exists():
+            return False
+        try:
+            with self._lock:
+                path.unlink(missing_ok=False)
+            return True
+        except Exception:
+            return False
+
 
 class UploadStore:
     def __init__(self, uploads_dir: Path) -> None:

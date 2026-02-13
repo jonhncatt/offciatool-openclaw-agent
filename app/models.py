@@ -81,6 +81,11 @@ class NewSessionResponse(BaseModel):
     session_id: str
 
 
+class DeleteSessionResponse(BaseModel):
+    ok: bool
+    session_id: str
+
+
 class SessionTurn(BaseModel):
     role: str
     text: str

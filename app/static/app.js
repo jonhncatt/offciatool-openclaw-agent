@@ -155,14 +155,14 @@ function formatSessionTime(raw) {
 }
 
 async function refreshSessionHistory() {
-  if (!sessionHistoryView) return;
+  if (!sessionHistoryView) return [];
   sessionHistoryView.textContent = "加载中...";
 
   try {
     const res = await fetch("/api/sessions?limit=80");
     if (!res.ok) {
       sessionHistoryView.textContent = "历史会话加载失败";
-      return;
+      return [];
     }
     const data = await res.json();
     const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
@@ -172,43 +172,100 @@ async function refreshSessionHistory() {
       empty.className = "session-history-empty";
       empty.textContent = "暂无历史会话";
       sessionHistoryView.appendChild(empty);
-      return;
+      return [];
     }
 
     sessions.forEach((item) => {
       const sid = String(item?.session_id || "");
       if (!sid) return;
 
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "session-history-item";
-      if (sid === state.sessionId) btn.classList.add("active");
+      const row = document.createElement("div");
+      row.className = "session-history-row";
+
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "session-history-item";
+      if (sid === state.sessionId) openBtn.classList.add("active");
 
       const title = document.createElement("div");
       title.className = "session-history-title";
       title.textContent = String(item?.title || "新会话");
-      btn.appendChild(title);
+      openBtn.appendChild(title);
 
       const meta = document.createElement("div");
       meta.className = "session-history-meta";
       meta.textContent = `turns ${item?.turn_count || 0} · ${formatSessionTime(item?.updated_at)}`;
-      btn.appendChild(meta);
+      openBtn.appendChild(meta);
 
       const preview = String(item?.preview || "").trim();
       if (preview) {
         const previewNode = document.createElement("div");
         previewNode.className = "session-history-preview";
         previewNode.textContent = preview;
-        btn.appendChild(previewNode);
+        openBtn.appendChild(previewNode);
       }
 
-      btn.addEventListener("click", async () => {
+      openBtn.addEventListener("click", async () => {
         await loadSessionById(sid, { announceMode: "switch" });
       });
-      sessionHistoryView.appendChild(btn);
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "session-history-delete";
+      deleteBtn.textContent = "删除";
+      deleteBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        await deleteSessionById(sid);
+      });
+
+      row.appendChild(openBtn);
+      row.appendChild(deleteBtn);
+      sessionHistoryView.appendChild(row);
     });
+    return sessions;
   } catch {
     sessionHistoryView.textContent = "历史会话加载失败";
+    return [];
+  }
+}
+
+async function deleteSessionById(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return;
+  const yes = window.confirm(`确认删除这个会话吗？\n${sid}\n删除后无法恢复。`);
+  if (!yes) return;
+
+  try {
+    const res = await fetch(`/api/session/${encodeURIComponent(sid)}`, { method: "DELETE" });
+    if (!res.ok) {
+      let detail = `删除失败: ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data?.detail) detail = `删除失败: ${data.detail}`;
+      } catch {}
+      throw new Error(detail);
+    }
+
+    const deletingCurrent = sid === state.sessionId;
+    if (deletingCurrent) {
+      state.sessionId = null;
+      refreshSession();
+      clearChat();
+    }
+
+    const sessions = await refreshSessionHistory();
+    if (deletingCurrent) {
+      if (Array.isArray(sessions) && sessions.length) {
+        await loadSessionById(String(sessions[0].session_id || ""), { announceMode: "switch" });
+      } else {
+        addBubble("system", `会话已删除：${sid}。当前无历史会话。`);
+      }
+    } else {
+      addBubble("system", `会话已删除：${sid}`);
+    }
+  } catch (err) {
+    addBubble("system", String(err));
   }
 }
 

@@ -14,6 +14,7 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     ClearStatsResponse,
+    DeleteSessionResponse,
     HealthResponse,
     NewSessionResponse,
     SessionDetailResponse,
@@ -80,6 +81,14 @@ def health() -> HealthResponse:
 def create_session() -> NewSessionResponse:
     session = session_store.create()
     return NewSessionResponse(session_id=session["id"])
+
+
+@app.delete("/api/session/{session_id}", response_model=DeleteSessionResponse)
+def delete_session(session_id: str) -> DeleteSessionResponse:
+    deleted = session_store.delete(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return DeleteSessionResponse(ok=True, session_id=session_id)
 
 
 @app.get("/api/session/{session_id}", response_model=SessionDetailResponse)
