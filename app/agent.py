@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -35,6 +36,9 @@ _NEWS_HINTS = (
     "比分",
     "ニュース",
 )
+
+_ATTACHMENT_INLINE_MAX_BYTES = 2 * 1024 * 1024
+_ATTACHMENT_INLINE_MAX_CHARS_SOFT = 120000
 
 
 class RunShellArgs(BaseModel):
@@ -740,6 +744,7 @@ class OfficeAgent:
         parts: list[dict[str, Any]] = [{"type": "text", "text": user_message}]
         notes: list[str] = []
         issues: list[str] = []
+        inline_max_chars = max(2000, min(self.config.max_attachment_chars, _ATTACHMENT_INLINE_MAX_CHARS_SOFT))
 
         for meta in attachment_metas:
             name = meta.get("original_name", "file")
@@ -747,7 +752,17 @@ class OfficeAgent:
             kind = meta.get("kind", "other")
             mime = meta.get("mime", "application/octet-stream")
             suffix = str(meta.get("suffix", "") or "").lower()
+            try:
+                file_size = int(meta.get("size") or 0)
+            except Exception:
+                file_size = 0
+            if (not file_size) and path:
+                try:
+                    file_size = Path(path).stat().st_size
+                except Exception:
+                    file_size = 0
             local_path_line = f"本地路径: {path}\n" if path else ""
+            file_size_line = f"文件大小: {self._format_bytes(file_size)}\n" if file_size > 0 else ""
             zip_hint_line = (
                 "该文件是 ZIP，若需要解压可调用 extract_zip(zip_path=该路径, dst_dir=目标目录)。\n"
                 if suffix == ".zip"
@@ -755,7 +770,24 @@ class OfficeAgent:
             )
 
             if kind == "document":
-                extracted = extract_document_text(path, self.config.max_attachment_chars)
+                if file_size > _ATTACHMENT_INLINE_MAX_BYTES:
+                    parts.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
+                                f"{local_path_line}{file_size_line}{zip_hint_line}"
+                                "请直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取后再分析。"
+                            ),
+                        }
+                    )
+                    notes.append(f"文档(大文件-路径):{name}")
+                    issues.append(
+                        f"{name} 体积较大({self._format_bytes(file_size)})，未自动注入全文；请用 read_text_file 分块读取。"
+                    )
+                    continue
+
+                extracted = extract_document_text(path, inline_max_chars)
                 if extracted:
                     parts.append(
                         {
@@ -844,6 +876,22 @@ class OfficeAgent:
         if len(raw) <= limit:
             return raw
         return f"{raw[:limit]}\n...[truncated {len(raw) - limit} chars]"
+
+    def _format_bytes(self, value: int | float | None) -> str:
+        try:
+            size = float(value or 0)
+        except Exception:
+            return "0 B"
+        if size <= 0:
+            return "0 B"
+        units = ["B", "KiB", "MiB", "GiB", "TiB"]
+        idx = 0
+        while size >= 1024 and idx < len(units) - 1:
+            size /= 1024.0
+            idx += 1
+        if idx == 0:
+            return f"{int(size)} {units[idx]}"
+        return f"{size:.2f} {units[idx]}"
 
     def _summarize_message_roles(self, messages: list[Any]) -> str:
         counts: dict[str, int] = {}

@@ -339,6 +339,52 @@ function formatJsonPreview(value, maxChars = 10000) {
   return `${raw.slice(0, maxChars)}\n\n...[truncated ${raw.length - maxChars} chars]`;
 }
 
+function formatBytes(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB"];
+  let idx = 0;
+  let cur = num;
+  while (cur >= 1024 && idx < units.length - 1) {
+    cur /= 1024;
+    idx += 1;
+  }
+  if (idx === 0) return `${Math.round(cur)} ${units[idx]}`;
+  return `${cur.toFixed(2)} ${units[idx]}`;
+}
+
+function startWaitStageTicker(totalAttachmentBytes = 0) {
+  const startedAt = Date.now();
+  const sizeHint =
+    totalAttachmentBytes > 0 ? `（附件总大小 ${formatBytes(totalAttachmentBytes)}）` : "";
+  let notifiedSlow = false;
+
+  const update = () => {
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    let text = `模型处理中，已等待 ${elapsedSec}s${sizeHint}`;
+    if (elapsedSec >= 60) {
+      text = `仍在处理中，已等待 ${elapsedSec}s${sizeHint}。大文件分析通常会更久。`;
+    } else if (elapsedSec >= 20) {
+      text = `处理中（可能在读取附件/执行工具），已等待 ${elapsedSec}s${sizeHint}`;
+    }
+    setRunStage("进行中", text, "wait", "working");
+    if (!notifiedSlow && elapsedSec >= 45) {
+      notifiedSlow = true;
+      renderRunTrace(
+        [
+          "请求已发送，后端仍在处理中。",
+          "如果本轮包含大文件，模型会分段读取并分析，耗时会明显增加。",
+        ],
+        []
+      );
+    }
+  };
+
+  update();
+  const timer = window.setInterval(update, 1000);
+  return () => window.clearInterval(timer);
+}
+
 function renderRunPayload(body, attachmentNames) {
   if (!runPayloadView) return;
   const settings = body?.settings || {};
@@ -531,6 +577,7 @@ function getSettings() {
 async function sendMessage() {
   const message = messageInput.value.trim();
   if (!message || state.sending) return;
+  let stopWaitTicker = null;
 
   setRunStage("进行中", "正在准备本轮请求参数", "prepare", "working");
 
@@ -569,13 +616,20 @@ async function sendMessage() {
       },
     ]);
     setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
-
-    setRunStage("进行中", "模型处理中（可能会调用工具）", "wait", "working");
+    const totalAttachmentBytes = state.attachments.reduce((sum, item) => {
+      const size = Number(item?.size || 0);
+      return sum + (Number.isFinite(size) ? size : 0);
+    }, 0);
+    stopWaitTicker = startWaitStageTicker(totalAttachmentBytes);
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    if (typeof stopWaitTicker === "function") {
+      stopWaitTicker();
+      stopWaitTicker = null;
+    }
     setRunStage("进行中", "收到服务响应，正在解析", "parse", "working");
 
     const data = await res.json();
@@ -613,6 +667,10 @@ async function sendMessage() {
     });
     setRunStage("完成", "本轮已完成", "done", "done");
   } catch (err) {
+    if (typeof stopWaitTicker === "function") {
+      stopWaitTicker();
+      stopWaitTicker = null;
+    }
     renderRunTrace([`请求失败: ${String(err)}`], []);
     renderLlmFlow([
       {
@@ -625,6 +683,10 @@ async function sendMessage() {
     setRunStage("失败", "请求失败，请检查错误信息", "parse", "error");
     addBubble("system", `请求失败: ${String(err)}`);
   } finally {
+    if (typeof stopWaitTicker === "function") {
+      stopWaitTicker();
+      stopWaitTicker = null;
+    }
     state.sending = false;
     sendBtn.disabled = false;
   }
