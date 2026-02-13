@@ -65,6 +65,12 @@ class FetchWebArgs(BaseModel):
     timeout_sec: int = Field(default=12, ge=3, le=30)
 
 
+class SearchWebArgs(BaseModel):
+    query: str
+    max_results: int = Field(default=5, ge=1, le=20)
+    timeout_sec: int = Field(default=12, ge=3, le=30)
+
+
 class OfficeAgent:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -191,6 +197,10 @@ class OfficeAgent:
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
+                    "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
+                    "除非用户明确指定网址，不要反复要求用户先给 URL。\n"
+                    "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
+                    "不要因为参数不完整而连续多轮追问。\n"
                     "当联网抓取返回 warning（如脚本/反爬页面）时，不要给确定性结论，"
                     "必须明确说明信息不足并建议改查权威来源。"
                 )
@@ -355,7 +365,7 @@ class OfficeAgent:
             plan.append(f"解析附件内容（{len(attachment_metas)} 个）。")
         plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
         if settings.enable_tools:
-            plan.append("如有必要调用工具（读文件/列目录/执行命令/联网抓取）获取事实。")
+            plan.append("如有必要调用工具（读文件/列目录/执行命令/联网搜索与抓取）获取事实。")
         plan.append("汇总结论并按你选择的回答长度输出。")
         return plan
 
@@ -460,6 +470,12 @@ class OfficeAgent:
                 args_schema=FetchWebArgs,
                 func=self._fetch_web_tool,
             ),
+            self._StructuredTool.from_function(
+                name="search_web",
+                description="Search web by query and return candidate URLs/snippets before fetch_web.",
+                args_schema=SearchWebArgs,
+                func=self._search_web_tool,
+            ),
         ]
 
     def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
@@ -515,6 +531,10 @@ class OfficeAgent:
 
     def _fetch_web_tool(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> str:
         result = self.tools.fetch_web(url=url, max_chars=max_chars, timeout_sec=timeout_sec)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _search_web_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
+        result = self.tools.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
         return json.dumps(result, ensure_ascii=False)
 
     def _build_user_content(

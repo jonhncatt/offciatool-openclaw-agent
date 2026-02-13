@@ -100,7 +100,7 @@ cd $HOME\Desktop\officetool
 
 ### Agent 工具调用
 
-默认开放 7 个工具：
+默认开放 8 个工具：
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
@@ -108,6 +108,7 @@ cd $HOME\Desktop\officetool
 - `copy_file`: 二进制安全复制文件（推荐用于“复制整个文件”）
 - `write_text_file`: 新建/覆盖写文本文件
 - `replace_in_file`: 按目标文本做替换（支持一次或多次）
+- `search_web`: 关键词联网搜索，返回候选链接与摘要（优先用于“先找链接”）
 - `fetch_web`: 联网抓取网页/JSON 文本
 
 安全约束：
@@ -117,6 +118,7 @@ cd $HOME\Desktop\officetool
 - 可用 `OFFICETOOL_ALLOW_ANY_PATH=true` 完全放开（仅建议内网可信环境；兼容旧名 `OFFCIATOOL_ALLOW_ANY_PATH`）
 - 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 - 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
+- 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互
 - 如遇证书链异常，可设置 `OFFICETOOL_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
 - 若未配置上述参数且遇到证书校验失败，`fetch_web` 也会自动降级重试一次（返回 `warning` 提示）
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）

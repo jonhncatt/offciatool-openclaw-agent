@@ -184,6 +184,88 @@ def _extract_search_query(url: str) -> str | None:
     return out or None
 
 
+def _clean_html_fragment(raw_html: str) -> str:
+    text = re.sub(r"(?s)<[^>]+>", " ", raw_html or "")
+    text = unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _decode_ddg_redirect(raw_url: str) -> str:
+    if not raw_url:
+        return raw_url
+    url = unescape(raw_url).strip()
+    absolute = urllib.parse.urljoin("https://duckduckgo.com", url)
+    try:
+        parsed = urllib.parse.urlsplit(absolute)
+    except Exception:
+        return absolute
+
+    host = (parsed.hostname or "").lower()
+    if host.endswith("duckduckgo.com") and parsed.path == "/l/":
+        q = urllib.parse.parse_qs(parsed.query or "")
+        target = (q.get("uddg") or [""])[0].strip()
+        if target:
+            return urllib.parse.unquote(target)
+    return absolute
+
+
+def _extract_ddg_results(raw_html: str, max_results: int) -> list[dict[str, str]]:
+    html = raw_html or ""
+    limit = max(1, min(20, int(max_results)))
+    patterns = [
+        re.compile(
+            r'(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>'
+        ),
+        re.compile(
+            r"(?is)<a[^>]*class=['\"][^'\"]*result-link[^'\"]*['\"][^>]*href=['\"]([^'\"]+)['\"][^>]*>(.*?)</a>"
+        ),
+    ]
+
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+
+    for pattern in patterns:
+        for match in pattern.finditer(html):
+            href = _decode_ddg_redirect(match.group(1) or "")
+            title = _clean_html_fragment(match.group(2) or "")
+            if not href or not title:
+                continue
+            try:
+                parsed = urllib.parse.urlsplit(href)
+            except Exception:
+                continue
+            if parsed.scheme not in {"http", "https"}:
+                continue
+            host = (parsed.hostname or "").lower()
+            if host.endswith("duckduckgo.com") and parsed.path == "/y.js":
+                continue
+
+            key = f"{href}|{title}".lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            snippet = ""
+            window = html[match.end() : match.end() + 2400]
+            snippet_match = re.search(
+                r'(?is)<(?:a|div|span)[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div|span)>',
+                window,
+            )
+            if not snippet_match:
+                snippet_match = re.search(
+                    r"(?is)<td[^>]*class=['\"][^'\"]*result-snippet[^'\"]*['\"][^>]*>(.*?)</td>",
+                    window,
+                )
+            if snippet_match:
+                snippet = _clean_html_fragment(snippet_match.group(1) or "")
+
+            out.append({"title": title, "url": href, "snippet": snippet})
+            if len(out) >= limit:
+                return out
+
+    return out
+
+
 def _normalize_url_for_request(raw_url: str) -> str:
     """
     Make URL safe for urllib by encoding non-ASCII host/path/query.
@@ -337,6 +419,21 @@ class LocalToolExecutor:
                     "additionalProperties": False,
                 },
             },
+            {
+                "type": "function",
+                "name": "search_web",
+                "description": "Search the web by query and return candidate URLs/snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query keywords"},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                        "timeout_sec": {"type": "integer", "minimum": 3, "maximum": 30, "default": 12},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -354,6 +451,8 @@ class LocalToolExecutor:
             return self.replace_in_file(**arguments)
         if name == "fetch_web":
             return self.fetch_web(**arguments)
+        if name == "search_web":
+            return self.search_web(**arguments)
         return {"ok": False, "error": f"Unknown tool: {name}"}
 
     def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
@@ -572,6 +671,115 @@ class LocalToolExecutor:
             if host == d or host.endswith("." + d):
                 return True
         return False
+
+    def search_web(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> dict[str, Any]:
+        q = (query or "").strip()
+        if not q:
+            return {"ok": False, "error": "query cannot be empty"}
+        if not self._domain_allowed("duckduckgo.com"):
+            return {
+                "ok": False,
+                "error": (
+                    "Domain not allowed for search: duckduckgo.com. "
+                    f"Allowed: {', '.join(self.config.web_allowed_domains)}"
+                ),
+            }
+
+        timeout_val = max(3, min(30, timeout_sec))
+        limit = max(1, min(20, int(max_results)))
+        read_limit = min(500000, max(20000, self.config.web_fetch_max_chars))
+        search_url = "https://duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q)
+        lite_url = "https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote_plus(q)
+
+        if self.config.web_skip_tls_verify:
+            ssl_context = ssl._create_unverified_context()
+        elif self.config.web_ca_cert_path:
+            try:
+                ssl_context = ssl.create_default_context(cafile=self.config.web_ca_cert_path)
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": f"Invalid web CA cert path: {self.config.web_ca_cert_path} ({exc})",
+                }
+        else:
+            ssl_context = ssl.create_default_context()
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.5",
+            "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        }
+
+        tls_warning: str | None = None
+        active_context = ssl_context
+
+        def _open(current_context: ssl.SSLContext | None, target_url: str):
+            req = urllib.request.Request(
+                url=target_url,
+                headers=headers,
+                method="GET",
+            )
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=current_context))
+            return opener.open(req, timeout=timeout_val)
+
+        def _fetch_page(target_url: str, current_context: ssl.SSLContext | None) -> tuple[int, str, str, bool]:
+            with _open(current_context, target_url) as resp:
+                status = getattr(resp, "status", None) or 200
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                raw = resp.read(read_limit + 1)
+                truncated = len(raw) > read_limit
+                raw = raw[:read_limit]
+                text = raw.decode("utf-8", errors="ignore")
+                return status, content_type, text, truncated
+
+        try:
+            try:
+                status, content_type, text, truncated = _fetch_page(search_url, active_context)
+            except Exception as first_exc:
+                if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
+                    tls_warning = "TLS verify failed; search_web auto-retried with verify disabled."
+                    active_context = ssl._create_unverified_context()
+                    status, content_type, text, truncated = _fetch_page(search_url, active_context)
+                else:
+                    raise
+
+            results = _extract_ddg_results(text, max_results=limit)
+            source = "duckduckgo_html"
+            if not results:
+                status, content_type, text, truncated = _fetch_page(lite_url, active_context)
+                results = _extract_ddg_results(text, max_results=limit)
+                source = "duckduckgo_lite"
+
+            warning = tls_warning
+            if not results:
+                warning = (
+                    f"{warning} 搜索结果页解析为空，可能被网关改写或反爬。"
+                    if warning
+                    else "搜索结果页解析为空，可能被网关改写或反爬。"
+                )
+
+            return {
+                "ok": True,
+                "query": q,
+                "engine": source,
+                "status": status,
+                "content_type": content_type,
+                "count": len(results),
+                "results": results,
+                "truncated": truncated,
+                "warning": warning,
+            }
+        except urllib.error.HTTPError as exc:
+            body = exc.read(4000).decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+            return {"ok": False, "error": f"HTTP {exc.code}: {exc.reason}", "body_preview": body}
+        except Exception as exc:
+            return {"ok": False, "error": f"search_web failed: {exc}"}
 
     def fetch_web(self, url: str, max_chars: int = 120000, timeout_sec: int = 12) -> dict[str, Any]:
         parsed = urllib.parse.urlparse(url)
