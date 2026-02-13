@@ -9,6 +9,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -263,6 +264,40 @@ def _extract_ddg_results(raw_html: str, max_results: int) -> list[dict[str, str]
             if len(out) >= limit:
                 return out
 
+    return out
+
+
+def _extract_google_news_rss_results(raw_xml: str, max_results: int) -> list[dict[str, str]]:
+    limit = max(1, min(20, int(max_results)))
+    xml_text = (raw_xml or "").strip()
+    if not xml_text:
+        return []
+
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return []
+
+    items = root.findall(".//item")
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        desc = (item.findtext("description") or "").strip()
+        if not title or not link:
+            continue
+
+        title = _clean_html_fragment(title)
+        link = _clean_html_fragment(link)
+        snippet = _clean_html_fragment(desc)
+        key = f"{title}|{link}".lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"title": title, "url": link, "snippet": snippet})
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -676,11 +711,13 @@ class LocalToolExecutor:
         q = (query or "").strip()
         if not q:
             return {"ok": False, "error": "query cannot be empty"}
-        if not self._domain_allowed("duckduckgo.com"):
+        ddg_allowed = self._domain_allowed("duckduckgo.com")
+        google_news_allowed = self._domain_allowed("news.google.com")
+        if not ddg_allowed and not google_news_allowed:
             return {
                 "ok": False,
                 "error": (
-                    "Domain not allowed for search: duckduckgo.com. "
+                    "Domain not allowed for search engines: duckduckgo.com/news.google.com. "
                     f"Allowed: {', '.join(self.config.web_allowed_domains)}"
                 ),
             }
@@ -690,6 +727,11 @@ class LocalToolExecutor:
         read_limit = min(500000, max(20000, self.config.web_fetch_max_chars))
         search_url = "https://duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q)
         lite_url = "https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote_plus(q)
+        news_rss_url = (
+            "https://news.google.com/rss/search?q="
+            + urllib.parse.quote_plus(q)
+            + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+        )
 
         if self.config.web_skip_tls_verify:
             ssl_context = ssl._create_unverified_context()
@@ -739,24 +781,48 @@ class LocalToolExecutor:
                 return status, content_type, text, truncated
 
         try:
-            try:
-                status, content_type, text, truncated = _fetch_page(search_url, active_context)
-            except Exception as first_exc:
-                if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
-                    tls_warning = "TLS verify failed; search_web auto-retried with verify disabled."
-                    active_context = ssl._create_unverified_context()
-                    status, content_type, text, truncated = _fetch_page(search_url, active_context)
-                else:
-                    raise
-
-            results = _extract_ddg_results(text, max_results=limit)
+            results: list[dict[str, str]] = []
             source = "duckduckgo_html"
-            if not results:
-                status, content_type, text, truncated = _fetch_page(lite_url, active_context)
-                results = _extract_ddg_results(text, max_results=limit)
-                source = "duckduckgo_lite"
+            status = 200
+            content_type = "text/html"
+            truncated = False
+
+            ddg_error: str | None = None
+            if ddg_allowed:
+                try:
+                    try:
+                        status, content_type, text, truncated = _fetch_page(search_url, active_context)
+                    except Exception as first_exc:
+                        if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
+                            tls_warning = "TLS verify failed; search_web auto-retried with verify disabled."
+                            active_context = ssl._create_unverified_context()
+                            status, content_type, text, truncated = _fetch_page(search_url, active_context)
+                        else:
+                            raise
+
+                    results = _extract_ddg_results(text, max_results=limit)
+                    source = "duckduckgo_html"
+                    if not results:
+                        status, content_type, text, truncated = _fetch_page(lite_url, active_context)
+                        results = _extract_ddg_results(text, max_results=limit)
+                        source = "duckduckgo_lite"
+                except Exception as exc:
+                    ddg_error = str(exc)
 
             warning = tls_warning
+            if ddg_error:
+                warning = f"{warning} DuckDuckGo 搜索失败: {ddg_error}" if warning else f"DuckDuckGo 搜索失败: {ddg_error}"
+
+            if not results and google_news_allowed:
+                try:
+                    status, content_type, text, truncated = _fetch_page(news_rss_url, active_context)
+                    rss_results = _extract_google_news_rss_results(text, max_results=limit)
+                    if rss_results:
+                        results = rss_results
+                        source = "google_news_rss"
+                except Exception as exc:
+                    warning = f"{warning} Google News RSS 回退失败: {exc}" if warning else f"Google News RSS 回退失败: {exc}"
+
             if not results:
                 warning = (
                     f"{warning} 搜索结果页解析为空，可能被网关改写或反爬。"
