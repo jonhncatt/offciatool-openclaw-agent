@@ -257,6 +257,9 @@ class OfficeAgent:
                     "解压 zip 文件优先使用 extract_zip；"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
                     "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
+                    "当用户要求查看/分析/改写文件时，默认已授权你直接读取相关文件并连续执行，不要逐步询问“要不要继续读下一步”。\n"
+                    "分块读取大文件时，应在同一轮里自动继续调用 read_text_file(start_char, max_chars) 直到信息足够或达到安全上限，"
+                    "仅在目标路径不明确、权限不足或文件不存在时再向用户提问。\n"
                     "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
                     "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
                     "fetch_web 遇到 PDF 会尝试抽取正文文本；若用户要求原文件落盘，必须用 download_web_file。\n"
@@ -374,7 +377,7 @@ class OfficeAgent:
                 usage_total,
             )
 
-        for _ in range(12):
+        for _ in range(24):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not settings.enable_tools or not tool_calls:
                 break
@@ -535,7 +538,7 @@ class OfficeAgent:
             plan.append(f"解析附件内容（{len(attachment_metas)} 个）。")
         plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
         if settings.enable_tools:
-            plan.append("如有必要调用工具（读文件/列目录/执行命令/联网搜索与抓取）获取事实。")
+            plan.append("如有必要自动连续调用工具（读文件/列目录/执行命令/联网搜索与抓取）获取事实，不逐步征询。")
         plan.append("汇总结论并按你选择的回答长度输出。")
         return plan
 
@@ -799,7 +802,7 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}"
-                                "如需正文，请调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取。"
+                                "你应直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取，不要先询问用户。"
                             ),
                         }
                     )
@@ -816,7 +819,7 @@ class OfficeAgent:
                             "text": (
                                 f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
                                 f"{local_path_line}{file_size_line}{zip_hint_line}"
-                                "请直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取后再分析。"
+                                "你应直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取后再分析，不要先询问用户。"
                             ),
                         }
                     )
