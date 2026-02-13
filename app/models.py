@@ -10,6 +10,7 @@ class ChatSettings(BaseModel):
     max_output_tokens: int = Field(default=128000, ge=120, le=128000)
     max_context_turns: int = Field(default=2000, ge=2, le=2000)
     enable_tools: bool = True
+    debug_raw: bool = False
     response_style: Literal["short", "normal", "long"] = "normal"
 
 

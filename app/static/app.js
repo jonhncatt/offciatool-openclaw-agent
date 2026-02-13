@@ -21,6 +21,7 @@ const tokenInput = document.getElementById("tokenInput");
 const ctxInput = document.getElementById("ctxInput");
 const styleInput = document.getElementById("styleInput");
 const toolInput = document.getElementById("toolInput");
+const rawDebugInput = document.getElementById("rawDebugInput");
 const presetGeneralBtn = document.getElementById("presetGeneralBtn");
 const presetCodingBtn = document.getElementById("presetCodingBtn");
 const modeStatus = document.getElementById("modeStatus");
@@ -164,6 +165,7 @@ function renderRunPayload(body, attachmentNames) {
     `max_output_tokens: ${settings.max_output_tokens}`,
     `max_context_turns: ${settings.max_context_turns}`,
     `enable_tools: ${settings.enable_tools}`,
+    `debug_raw: ${settings.debug_raw}`,
     `response_style: ${settings.response_style}`,
     "",
     "payload json:",
@@ -335,6 +337,7 @@ function getSettings() {
     max_output_tokens: Number(tokenInput.value || 128000),
     max_context_turns: Number(ctxInput.value || 2000),
     enable_tools: toolInput.checked,
+    debug_raw: Boolean(rawDebugInput?.checked),
     response_style: styleInput.value,
   };
 }

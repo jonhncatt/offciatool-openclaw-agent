@@ -167,13 +167,16 @@ class OfficeAgent:
         usage_total = self._empty_usage()
         allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
 
+        debug_raw = bool(getattr(settings, "debug_raw", False))
+        debug_limit = 120000 if debug_raw else 3200
+
         def add_debug(stage: str, title: str, detail: str) -> None:
             debug_flow.append(
                 {
                     "step": len(debug_flow) + 1,
                     "stage": stage,
                     "title": title,
-                    "detail": self._shorten(detail, 3200),
+                    "detail": self._shorten(detail, debug_limit),
                 }
             )
 
@@ -223,10 +226,12 @@ class OfficeAgent:
             title="后端 -> LLM 请求",
             detail=(
                 f"model={model}, enable_tools={settings.enable_tools}, max_output_tokens={settings.max_output_tokens}, "
+                f"debug_raw={debug_raw}, "
                 f"history_turns_used={min(len(history_turns), settings.max_context_turns)}, "
                 f"attachments={len(attachment_metas)}\n"
                 f"message_roles={self._summarize_message_roles(messages)}\n"
-                f"user_message_preview={self._shorten(user_message, 400)}"
+                f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 20000)}\n"
+                f"request_payload:\n{self._serialize_messages_for_debug(messages, raw_mode=debug_raw)}"
             ),
         )
 
@@ -244,7 +249,7 @@ class OfficeAgent:
             add_debug(
                 stage="llm_to_backend",
                 title="LLM -> 后端 首次响应",
-                detail=self._summarize_ai_response(ai_msg),
+                detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
             )
         except Exception as exc:
             execution_trace.append(f"模型请求失败: {exc}")
@@ -277,7 +282,7 @@ class OfficeAgent:
                 add_debug(
                     stage="llm_to_backend",
                     title=f"LLM -> 后端 工具调用 {name}",
-                    detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200)}",
+                    detail=f"args={self._shorten(json.dumps(arguments, ensure_ascii=False), 1200 if not debug_raw else 50000)}",
                 )
 
                 tool_events.append(
@@ -299,7 +304,7 @@ class OfficeAgent:
                 add_debug(
                     stage="backend_tool",
                     title=f"后端工具执行结果 {name}",
-                    detail=self._shorten(result_json, 1800),
+                    detail=self._shorten(result_json, 1800 if not debug_raw else 120000),
                 )
                 add_debug(
                     stage="backend_to_llm",
@@ -313,7 +318,7 @@ class OfficeAgent:
                 add_debug(
                     stage="llm_to_backend",
                     title="LLM -> 后端 后续响应",
-                    detail=self._summarize_ai_response(ai_msg),
+                    detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
                 )
             except Exception as exc:
                 execution_trace.append(f"工具后续推理失败: {exc}")
@@ -335,7 +340,7 @@ class OfficeAgent:
         add_debug(
             stage="llm_final",
             title="LLM 最终输出",
-            detail=f"text_chars={len(text)}\npreview={self._shorten(text, 1200)}",
+            detail=f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}",
         )
         return text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, usage_total
 
@@ -610,7 +615,58 @@ class OfficeAgent:
         parts = [f"{k}={v}" for k, v in sorted(counts.items())]
         return ", ".join(parts) if parts else "(empty)"
 
-    def _summarize_ai_response(self, ai_msg: Any) -> str:
+    def _serialize_messages_for_debug(self, messages: list[Any], raw_mode: bool = False) -> str:
+        lines: list[str] = []
+        max_content = 120000 if raw_mode else 1600
+        for idx, msg in enumerate(messages, start=1):
+            role = type(msg).__name__
+            content = getattr(msg, "content", "")
+            lines.append(f"[{idx}] {role}")
+            lines.append(self._shorten(self._serialize_content_for_debug(content, raw_mode=raw_mode), max_content))
+            lines.append("")
+        return "\n".join(lines).strip()
+
+    def _serialize_content_for_debug(self, content: Any, raw_mode: bool = False) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content or "")
+
+        lines: list[str] = []
+        for idx, item in enumerate(content, start=1):
+            if isinstance(item, str):
+                lines.append(f"{idx}. {item}")
+                continue
+            if not isinstance(item, dict):
+                lines.append(f"{idx}. {str(item)}")
+                continue
+
+            item_type = item.get("type")
+            if item_type == "image_url":
+                image_url = item.get("image_url") or {}
+                url = image_url.get("url") if isinstance(image_url, dict) else ""
+                if isinstance(url, str) and url.startswith("data:"):
+                    if raw_mode:
+                        preview = self._shorten(url, 1200)
+                        lines.append(f"{idx}. image_url(data_url_len={len(url)}) preview={preview}")
+                    else:
+                        lines.append(f"{idx}. image_url(data_url_len={len(url)}) [omitted]")
+                else:
+                    lines.append(f"{idx}. {json.dumps(item, ensure_ascii=False, default=str)}")
+                continue
+
+            lines.append(f"{idx}. {json.dumps(item, ensure_ascii=False, default=str)}")
+        return "\n".join(lines)
+
+    def _summarize_ai_response(self, ai_msg: Any, raw_mode: bool = False) -> str:
+        if raw_mode:
+            payload = {
+                "tool_calls": getattr(ai_msg, "tool_calls", None),
+                "content": getattr(ai_msg, "content", None),
+                "additional_kwargs": getattr(ai_msg, "additional_kwargs", None),
+            }
+            return self._shorten(json.dumps(payload, ensure_ascii=False, default=str), 120000)
+
         lines: list[str] = []
         tool_calls = getattr(ai_msg, "tool_calls", None) or []
         if tool_calls:
