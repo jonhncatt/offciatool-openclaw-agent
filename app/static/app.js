@@ -39,6 +39,18 @@ const RUN_FLOW_STEPS = [
   { id: "done", label: "5. 完成" },
 ];
 
+const LLM_FLOW_STAGE_LABELS = {
+  frontend_prepare: "前端组包",
+  frontend_error: "前端错误",
+  backend_to_llm: "后端 -> LLM",
+  llm_to_backend: "LLM -> 后端",
+  backend_tool: "后端工具执行",
+  llm_final: "LLM最终答复",
+  llm_error: "LLM错误",
+  backend_warning: "后端告警",
+  backend_pricing: "计费处理",
+};
+
 const MODE_PRESETS = {
   general: {
     label: "通用模式",
@@ -85,25 +97,10 @@ function applyModePreset(mode, announce = true) {
   }
 }
 
-function addBubble(role, text, tools = null) {
+function addBubble(role, text) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${role}`;
   bubble.textContent = text;
-
-  if (tools && Array.isArray(tools) && tools.length) {
-    const toolBox = document.createElement("div");
-    toolBox.className = "tool-box";
-
-    tools.forEach((item, idx) => {
-      const row = document.createElement("div");
-      row.className = "tool-item";
-      const inputTxt = item.input ? JSON.stringify(item.input) : "{}";
-      row.textContent = `#${idx + 1} ${item.name}(${inputTxt}) -> ${item.output_preview}`;
-      toolBox.appendChild(row);
-    });
-
-    bubble.appendChild(toolBox);
-  }
 
   chatList.appendChild(bubble);
   chatList.scrollTop = chatList.scrollHeight;
@@ -207,9 +204,10 @@ function renderLlmFlow(items = []) {
   items.forEach((item, idx) => {
     const step = item?.step ?? idx + 1;
     const stage = item?.stage || "unknown";
+    const stageLabel = LLM_FLOW_STAGE_LABELS[stage] || stage;
     const title = item?.title || "未命名步骤";
     const detail = item?.detail || "";
-    lines.push(`[${step}] ${title} (${stage})`);
+    lines.push(`[${step}] ${title} (${stageLabel})`);
     lines.push(detail);
     lines.push("");
   });
@@ -417,7 +415,7 @@ async function sendMessage() {
     renderRunTrace(data.execution_trace || [], data.tool_events || []);
     renderLlmFlow(data.debug_flow || []);
 
-    addBubble("assistant", data.text, data.tool_events || []);
+    addBubble("assistant", data.text);
     renderTokenStats({
       last: data.token_usage || {},
       session: data.session_token_totals || {},
