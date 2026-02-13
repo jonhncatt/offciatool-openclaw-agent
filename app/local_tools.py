@@ -156,6 +156,34 @@ def _looks_like_script_payload(text: str) -> bool:
     return (hits >= 3 and longest_line >= 220) or punct_ratio >= 0.45
 
 
+def _extract_search_query(url: str) -> str | None:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except Exception:
+        return None
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
+
+    q = urllib.parse.parse_qs(parsed.query or "")
+    key = None
+    if "google." in host or "bing." in host:
+        key = "q"
+    elif "yahoo." in host:
+        key = "p"
+    elif "baidu." in host:
+        key = "wd"
+
+    if not key:
+        return None
+    vals = q.get(key) or []
+    if not vals:
+        return None
+    out = (vals[0] or "").strip()
+    return out or None
+
+
 def _normalize_url_for_request(raw_url: str) -> str:
     """
     Make URL safe for urllib by encoding non-ASCII host/path/query.
@@ -581,31 +609,40 @@ class LocalToolExecutor:
             else:
                 ssl_context = ssl.create_default_context()
 
-        req = urllib.request.Request(
-            url=request_url,
-            headers={
-                "User-Agent": "OfficetoolAgent/1.0",
-                "Accept": "text/html,application/json,text/plain,application/xml;q=0.9,*/*;q=0.5",
-            },
-            method="GET",
-        )
+        default_headers = {
+            # Use a browser-like UA to reduce bot-block false positives.
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/json,text/plain,application/xml;q=0.9,*/*;q=0.5",
+            "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        }
 
         tls_warning: str | None = None
 
-        def _open(current_context: ssl.SSLContext | None):
+        def _open(current_context: ssl.SSLContext | None, target_url: str):
+            req = urllib.request.Request(
+                url=target_url,
+                headers=default_headers,
+                method="GET",
+            )
             opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=current_context))
             return opener.open(req, timeout=timeout_val)
 
         try:
             try:
-                resp_cm = _open(ssl_context)
+                resp_cm = _open(ssl_context, request_url)
             except Exception as first_exc:
                 # Pragmatic fallback for enterprise TLS chains:
                 # if verification fails and user did not explicitly disable it,
                 # retry once with verification off for fetch_web only.
                 if not self.config.web_skip_tls_verify and _is_cert_verify_error(first_exc):
                     tls_warning = "TLS verify failed; fetch_web auto-retried with verify disabled."
-                    resp_cm = _open(ssl._create_unverified_context())
+                    resp_cm = _open(ssl._create_unverified_context(), request_url)
                 else:
                     raise
 
@@ -643,6 +680,56 @@ class LocalToolExecutor:
                             "请不要据此下结论，建议改用官方 API 或可直读页面。"
                         )
                         warning = f"{script_warning} {warning}" if warning else script_warning
+
+                        # Search-engine anti-bot fallback: try a text-friendly results page.
+                        search_query = _extract_search_query(url)
+                        if search_query and self._domain_allowed("duckduckgo.com"):
+                            fallback_url = (
+                                "https://duckduckgo.com/html/?q="
+                                + urllib.parse.quote_plus(search_query)
+                            )
+                            try:
+                                with _open(ssl_context, fallback_url) as fb_resp:
+                                    fb_status = getattr(fb_resp, "status", None) or 200
+                                    fb_ct = (fb_resp.headers.get("Content-Type") or "").lower()
+                                    fb_raw = fb_resp.read(limit + 1)
+                                    fb_truncated = len(fb_raw) > limit
+                                    fb_raw = fb_raw[:limit]
+                                    fb_text = fb_raw.decode("utf-8", errors="ignore")
+                                    fb_extracted = _extract_html_text(fb_text, max_chars=limit)
+
+                                if fb_extracted.strip() and not _looks_like_script_payload(fb_extracted):
+                                    if tls_warning:
+                                        warning = f"{tls_warning} {warning}" if warning else tls_warning
+                                    fallback_warning = (
+                                        f"{warning} 已自动回退到 DuckDuckGo HTML 结果页（query={search_query}）。"
+                                        if warning
+                                        else f"已自动回退到 DuckDuckGo HTML 结果页（query={search_query}）。"
+                                    )
+                                    return {
+                                        "ok": True,
+                                        "url": url,
+                                        "status": fb_status,
+                                        "content_type": fb_ct,
+                                        "binary": False,
+                                        "truncated": fb_truncated,
+                                        "content": fb_extracted,
+                                        "length": len(fb_extracted),
+                                        "source_format": "search_fallback_duckduckgo_html",
+                                        "warning": fallback_warning,
+                                    }
+                            except Exception as fb_exc:
+                                warning = (
+                                    f"{warning} DuckDuckGo 回退失败: {fb_exc}"
+                                    if warning
+                                    else f"DuckDuckGo 回退失败: {fb_exc}"
+                                )
+
+                        # Avoid passing noisy script payload to the model.
+                        extracted = (
+                            "[抓取到脚本/反爬页面，正文不可用。"
+                            "请改用目标站点公开 API、可直读正文 URL，或非搜索结果页链接。]"
+                        )
                     if tls_warning:
                         warning = f"{tls_warning} {warning}" if warning else tls_warning
                     return {
