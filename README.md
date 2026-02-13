@@ -119,6 +119,7 @@ cd $HOME\Desktop\officetool
 - 联网抓取可用 `OFFICETOOL_WEB_ALLOWED_DOMAINS` 限定域名白名单（为空则不限制）
 - 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
 - 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互
+- 对“新闻/实时”类问题，后端会自动做一次 `search_web` 预搜索并把候选链接注入上下文，减少反复追问
 - 如遇证书链异常，可设置 `OFFICETOOL_WEB_CA_CERT_PATH` 指定 CA；若仍失败可临时用 `OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`（仅建议内网）
 - 若未配置上述参数且遇到证书校验失败，`fetch_web` 也会自动降级重试一次（返回 `warning` 提示）
 - 若要“完整复制一个文件”，请让助手使用 `copy_file`，不要用 `read_text_file + write_text_file`（前者是全量复制，后者可能按 `max_chars` 截断）

@@ -19,6 +19,23 @@ _STYLE_HINTS = {
     "long": "回答可适当详细，但要结构化并突出行动建议。",
 }
 
+_NEWS_HINTS = (
+    "news",
+    "latest",
+    "breaking",
+    "headline",
+    "today",
+    "score",
+    "scores",
+    "新闻",
+    "消息",
+    "今日",
+    "今天",
+    "战报",
+    "比分",
+    "ニュース",
+)
+
 
 class RunShellArgs(BaseModel):
     command: str = Field(description="Shell command, e.g. `ls -la` or `rg TODO .`")
@@ -203,6 +220,8 @@ class OfficeAgent:
                     "再决定是否向用户补充提问。\n"
                     "如果参数可合理推断（如标题、默认文件名、默认目录），请直接执行并在回复里说明假设；"
                     "不要因为参数不完整而连续多轮追问。\n"
+                    "联网信息不足时，先自动换来源继续抓取；即使正文不完整，也先基于可访问到的标题/摘要给临时结论，"
+                    "不要先要求用户补网址。\n"
                     "当联网抓取返回 warning（如脚本/反爬页面）时，不要给确定性结论，"
                     "必须明确说明信息不足并建议改查权威来源。"
                 )
@@ -228,10 +247,39 @@ class OfficeAgent:
 
         user_content, attachment_note, attachment_issues = self._build_user_content(user_message, attachment_metas)
         messages.append(self._HumanMessage(content=user_content))
+        tool_events: list[ToolEvent] = []
         if attachment_metas:
             execution_trace.append(f"已处理 {len(attachment_metas)} 个附件输入。")
         for issue in attachment_issues:
             execution_trace.append(f"附件提示: {issue}")
+
+        prefetch_payload = self._auto_prefetch_web(user_message, settings.enable_tools)
+        if prefetch_payload:
+            messages.append(self._SystemMessage(content=prefetch_payload["context"]))
+            execution_trace.append(
+                f"已自动预搜索网络候选: {prefetch_payload.get('count', 0)} 条（query={prefetch_payload['query']}）。"
+            )
+            warning = prefetch_payload.get("warning")
+            if warning:
+                execution_trace.append(f"预搜索提示: {warning}")
+            tool_events.append(
+                ToolEvent(
+                    name="search_web(auto_prefetch)",
+                    input={"query": prefetch_payload["query"], "max_results": prefetch_payload.get("count", 0)},
+                    output_preview=self._shorten(
+                        json.dumps(prefetch_payload.get("raw_result", {}), ensure_ascii=False),
+                        1200,
+                    ),
+                )
+            )
+            add_debug(
+                stage="backend_tool",
+                title="后端自动预搜索 search_web",
+                detail=self._shorten(
+                    json.dumps(prefetch_payload.get("raw_result", {}), ensure_ascii=False),
+                    3200 if not debug_raw else 120000,
+                ),
+            )
 
         add_debug(
             stage="backend_to_llm",
@@ -247,7 +295,6 @@ class OfficeAgent:
             ),
         )
 
-        tool_events: list[ToolEvent] = []
         execution_trace.append("开始模型推理。")
 
         try:
@@ -360,6 +407,76 @@ class OfficeAgent:
             detail=f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}",
         )
         return text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, usage_total
+
+    def _auto_prefetch_web(self, user_message: str, enable_tools: bool) -> dict[str, Any] | None:
+        if not enable_tools:
+            return None
+        query = (user_message or "").strip()
+        if not query:
+            return None
+        lowered = query.lower()
+        if "http://" in lowered or "https://" in lowered:
+            return None
+        if not any(hint in lowered for hint in _NEWS_HINTS):
+            return None
+
+        variants = [query]
+        if "news" not in lowered and "新闻" not in query and "ニュース" not in query:
+            variants.append(f"{query} news")
+        if "today" not in lowered and "今天" not in query and "今日" not in query:
+            variants.append(f"{query} today")
+
+        seen: set[str] = set()
+        for candidate in variants:
+            q = candidate.strip()
+            if not q or q.lower() in seen:
+                continue
+            seen.add(q.lower())
+            result = self.tools.search_web(query=q, max_results=6, timeout_sec=self.config.web_fetch_timeout_sec)
+            if not result.get("ok"):
+                continue
+            count = int(result.get("count") or 0)
+            if count <= 0:
+                continue
+            context = self._format_prefetch_search_context(query=q, result=result)
+            return {
+                "query": q,
+                "count": count,
+                "warning": result.get("warning"),
+                "context": context,
+                "raw_result": result,
+            }
+        return None
+
+    def _format_prefetch_search_context(self, query: str, result: dict[str, Any]) -> str:
+        rows = result.get("results") or []
+        if not isinstance(rows, list):
+            rows = []
+        lines = [
+            "自动预搜索结果（后端预取，供本轮直接使用）:",
+            f"query={query}",
+            f"engine={result.get('engine', 'unknown')}",
+        ]
+        for idx, item in enumerate(rows[:6], start=1):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            url = str(item.get("url", "")).strip()
+            snippet = str(item.get("snippet", "")).strip()
+            published_at = str(item.get("published_at", "")).strip()
+            if not title and not url:
+                continue
+            lines.append(f"{idx}. {title}")
+            if published_at:
+                lines.append(f"   published_at: {published_at}")
+            if url:
+                lines.append(f"   url: {url}")
+            if snippet:
+                lines.append(f"   snippet: {self._shorten(snippet, 220)}")
+        warning = str(result.get("warning") or "").strip()
+        if warning:
+            lines.append(f"warning: {warning}")
+        return "\n".join(lines)[:6000]
 
     def _build_execution_plan(self, attachment_metas: list[dict[str, Any]], settings: ChatSettings) -> list[str]:
         plan = ["理解你的目标和约束。"]

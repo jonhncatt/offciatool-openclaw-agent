@@ -267,6 +267,32 @@ def _extract_ddg_results(raw_html: str, max_results: int) -> list[dict[str, str]
     return out
 
 
+def _looks_news_like_query(query: str) -> bool:
+    text = (query or "").strip().lower()
+    if not text:
+        return False
+    keywords = [
+        "news",
+        "latest",
+        "breaking",
+        "headline",
+        "headlines",
+        "today",
+        "score",
+        "scores",
+        "新闻",
+        "消息",
+        "今日",
+        "今天",
+        "速报",
+        "戰報",
+        "战报",
+        "比分",
+        "ニュース",
+    ]
+    return any(k in text for k in keywords)
+
+
 def _extract_google_news_rss_results(raw_xml: str, max_results: int) -> list[dict[str, str]]:
     limit = max(1, min(20, int(max_results)))
     xml_text = (raw_xml or "").strip()
@@ -295,7 +321,11 @@ def _extract_google_news_rss_results(raw_xml: str, max_results: int) -> list[dic
         if key in seen:
             continue
         seen.add(key)
-        out.append({"title": title, "url": link, "snippet": snippet})
+        published_at = (item.findtext("pubDate") or "").strip()
+        entry = {"title": title, "url": link, "snippet": snippet}
+        if published_at:
+            entry["published_at"] = published_at
+        out.append(entry)
         if len(out) >= limit:
             break
     return out
@@ -725,6 +755,7 @@ class LocalToolExecutor:
         timeout_val = max(3, min(30, timeout_sec))
         limit = max(1, min(20, int(max_results)))
         read_limit = min(500000, max(20000, self.config.web_fetch_max_chars))
+        prefer_news = _looks_news_like_query(q)
         search_url = "https://duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q)
         lite_url = "https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote_plus(q)
         news_rss_url = (
@@ -786,9 +817,20 @@ class LocalToolExecutor:
             status = 200
             content_type = "text/html"
             truncated = False
+            warning_parts: list[str] = []
+
+            if prefer_news and google_news_allowed:
+                try:
+                    status, content_type, text, truncated = _fetch_page(news_rss_url, active_context)
+                    rss_results = _extract_google_news_rss_results(text, max_results=limit)
+                    if rss_results:
+                        results = rss_results
+                        source = "google_news_rss"
+                except Exception as exc:
+                    warning_parts.append(f"Google News RSS 首轮失败: {exc}")
 
             ddg_error: str | None = None
-            if ddg_allowed:
+            if ddg_allowed and not results:
                 try:
                     try:
                         status, content_type, text, truncated = _fetch_page(search_url, active_context)
@@ -811,7 +853,7 @@ class LocalToolExecutor:
 
             warning = tls_warning
             if ddg_error:
-                warning = f"{warning} DuckDuckGo 搜索失败: {ddg_error}" if warning else f"DuckDuckGo 搜索失败: {ddg_error}"
+                warning_parts.append(f"DuckDuckGo 搜索失败: {ddg_error}")
 
             if not results and google_news_allowed:
                 try:
@@ -821,14 +863,15 @@ class LocalToolExecutor:
                         results = rss_results
                         source = "google_news_rss"
                 except Exception as exc:
-                    warning = f"{warning} Google News RSS 回退失败: {exc}" if warning else f"Google News RSS 回退失败: {exc}"
+                    warning_parts.append(f"Google News RSS 回退失败: {exc}")
 
             if not results:
-                warning = (
-                    f"{warning} 搜索结果页解析为空，可能被网关改写或反爬。"
-                    if warning
-                    else "搜索结果页解析为空，可能被网关改写或反爬。"
-                )
+                warning_parts.append("搜索结果页解析为空，可能被网关改写或反爬。")
+
+            if tls_warning:
+                warning_parts.insert(0, tls_warning)
+
+            warning = " ".join(part.strip() for part in warning_parts if part and part.strip()) or None
 
             return {
                 "ok": True,
