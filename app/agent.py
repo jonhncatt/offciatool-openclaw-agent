@@ -309,7 +309,12 @@ class OfficeAgent:
                 add_debug(
                     stage="backend_to_llm",
                     title=f"后端 -> LLM 工具结果 {name}",
-                    detail=f"tool_call_id={call_id}, payload_chars={len(result_json)}",
+                    detail=self._serialize_tool_message_for_debug(
+                        name=name,
+                        tool_call_id=call_id,
+                        content=result_json,
+                        raw_mode=debug_raw,
+                    ),
                 )
 
             try:
@@ -687,6 +692,22 @@ class OfficeAgent:
         if not lines:
             lines.append("empty response content")
         return "\n".join(lines)
+
+    def _serialize_tool_message_for_debug(
+        self,
+        name: str,
+        tool_call_id: str,
+        content: str,
+        raw_mode: bool = False,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "name": name,
+            "tool_call_id": tool_call_id,
+            "payload_chars": len(content),
+            "content": content,
+        }
+        limit = 120000 if raw_mode else 2400
+        return self._shorten(json.dumps(payload, ensure_ascii=False), limit)
 
     def _empty_usage(self) -> dict[str, int]:
         return {
