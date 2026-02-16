@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
+import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +40,69 @@ session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
 _agent: OfficeAgent | None = None
+
+
+class AgentRunQueue:
+    """
+    OpenClaw-style lane queue:
+    - one active run per session
+    - bounded global concurrency across sessions
+    """
+
+    def __init__(self, max_concurrent_runs: int) -> None:
+        self._global_sem = threading.BoundedSemaphore(max(1, int(max_concurrent_runs)))
+        self._locks_guard = threading.Lock()
+        self._session_locks: dict[str, threading.Lock] = {}
+
+    def _get_session_lock(self, session_id: str) -> threading.Lock:
+        sid = str(session_id or "").strip() or "__anon__"
+        with self._locks_guard:
+            lock = self._session_locks.get(sid)
+            if lock is None:
+                lock = threading.Lock()
+                self._session_locks[sid] = lock
+            return lock
+
+    def run_slot(self, session_id: str):
+        sid = str(session_id or "").strip() or "__anon__"
+        started = time.monotonic()
+        session_lock = self._get_session_lock(sid)
+        session_lock.acquire()
+        self._global_sem.acquire()
+        wait_ms = int((time.monotonic() - started) * 1000)
+        return _AgentRunQueueTicket(self._global_sem, session_lock, wait_ms)
+
+
+class _AgentRunQueueTicket:
+    def __init__(
+        self,
+        global_sem: threading.BoundedSemaphore,
+        session_lock: threading.Lock,
+        wait_ms: int,
+    ) -> None:
+        self._global_sem = global_sem
+        self._session_lock = session_lock
+        self.wait_ms = max(0, int(wait_ms))
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        try:
+            self._global_sem.release()
+        finally:
+            self._session_lock.release()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.release()
+        return False
+
+
+run_queue = AgentRunQueue(config.max_concurrent_runs)
 
 
 def get_agent() -> OfficeAgent:
@@ -190,130 +254,173 @@ def _process_chat_request(
 ) -> ChatResponse:
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY is required")
-    _emit_progress(progress_cb, "stage", code="backend_start", detail="后端已接收请求，开始处理。")
-
-    session = session_store.load_or_create(req.session_id)
-    _emit_progress(progress_cb, "stage", code="session_ready", detail=f"会话已就绪: {session.get('id')}")
-    agent = get_agent()
-    summarized = agent.maybe_compact_session(session, req.settings.max_context_turns)
-    if summarized:
-        _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。")
-
-    attachments = upload_store.get_many(req.attachment_ids)
+    run_id = str(uuid.uuid4())
     _emit_progress(
         progress_cb,
         "stage",
-        code="attachments_ready",
-        detail=f"附件检查完成: 请求 {len(req.attachment_ids)} 个，命中 {len(attachments)} 个。",
+        code="backend_start",
+        detail=f"后端已接收请求，开始处理。run_id={run_id}",
+        run_id=run_id,
     )
-    found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
-    missing_attachment_ids = [file_id for file_id in req.attachment_ids if file_id not in found_attachment_ids]
 
-    _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始模型推理与工具调度。")
-    text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, token_usage = agent.run_chat(
-        history_turns=session.get("turns", []),
-        summary=session.get("summary", ""),
-        user_message=req.message,
-        attachment_metas=attachments,
-        settings=req.settings,
-        progress_cb=progress_cb,
-    )
-    _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。")
-    if missing_attachment_ids:
-        warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
-        execution_trace.append(warning_msg)
-        _emit_progress(progress_cb, "trace", message=warning_msg, index=len(execution_trace))
+    seed_session = session_store.load_or_create(req.session_id)
+    session_id = str(seed_session.get("id") or "")
+    if not session_id:
+        raise HTTPException(status_code=500, detail="Session create failed")
 
-        debug_item = {
-            "step": len(debug_flow) + 1,
-            "stage": "backend_warning",
-            "title": "附件检查",
-            "detail": f"检测到 {len(missing_attachment_ids)} 个附件 ID 丢失，已提示前端重新上传。",
-        }
-        debug_flow.append(debug_item)
-        _emit_progress(progress_cb, "debug", item=debug_item)
+    queue_wait_ms = 0
+    with run_queue.run_slot(session_id) as ticket:
+        queue_wait_ms = int(ticket.wait_ms)
+        if queue_wait_ms >= config.run_queue_wait_notice_ms:
+            _emit_progress(
+                progress_cb,
+                "trace",
+                message=f"当前会话存在并发请求，已排队等待 {queue_wait_ms} ms。",
+                run_id=run_id,
+            )
 
-    user_text = req.message.strip()
-    if attachment_note:
-        user_text = f"{user_text}\n\n[附件] {attachment_note}"
-
-    session_store.append_turn(
-        session,
-        role="user",
-        text=user_text,
-        attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
-    )
-    session_store.append_turn(session, role="assistant", text=text)
-    session_store.save(session)
-    _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。")
-
-    selected_model = req.settings.model or config.default_model
-    pricing_meta = estimate_usage_cost(
-        model=selected_model,
-        input_tokens=token_usage.get("input_tokens", 0),
-        output_tokens=token_usage.get("output_tokens", 0),
-    )
-    token_usage = {**token_usage, **pricing_meta}
-    if pricing_meta.get("pricing_known"):
-        pricing_trace = (
-            "费用估算: "
-            f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
-            f"output ${pricing_meta.get('output_price_per_1m')}/1M."
+        session = session_store.load_or_create(session_id)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="session_ready",
+            detail=f"会话已就绪: {session.get('id')}",
+            run_id=run_id,
+            queue_wait_ms=queue_wait_ms,
         )
-        execution_trace.append(pricing_trace)
-        _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace))
+        agent = get_agent()
+        summarized = agent.maybe_compact_session(session, req.settings.max_context_turns)
+        if summarized:
+            _emit_progress(progress_cb, "trace", message="历史上下文已自动压缩摘要。", run_id=run_id)
 
-        pricing_debug = {
-            "step": len(debug_flow) + 1,
-            "stage": "backend_pricing",
-            "title": "费用估算",
-            "detail": (
-                f"按 {pricing_meta.get('pricing_model')} 计价："
-                f"in ${pricing_meta.get('input_price_per_1m')}/1M, "
-                f"out ${pricing_meta.get('output_price_per_1m')}/1M, "
-                f"本轮约 ${pricing_meta.get('estimated_cost_usd')}."
-            ),
-        }
-        debug_flow.append(pricing_debug)
-        _emit_progress(progress_cb, "debug", item=pricing_debug)
-    else:
-        pricing_trace = f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。"
-        execution_trace.append(pricing_trace)
-        _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace))
+        attachments = upload_store.get_many(req.attachment_ids)
+        _emit_progress(
+            progress_cb,
+            "stage",
+            code="attachments_ready",
+            detail=f"附件检查完成: 请求 {len(req.attachment_ids)} 个，命中 {len(attachments)} 个。",
+            run_id=run_id,
+        )
+        found_attachment_ids = {str(item.get("id")) for item in attachments if item.get("id")}
+        missing_attachment_ids = [file_id for file_id in req.attachment_ids if file_id not in found_attachment_ids]
 
-        pricing_debug = {
-            "step": len(debug_flow) + 1,
-            "stage": "backend_pricing",
-            "title": "费用估算",
-            "detail": f"模型 {selected_model} 未匹配内置价格表，仅统计 token。",
-        }
-        debug_flow.append(pricing_debug)
-        _emit_progress(progress_cb, "debug", item=pricing_debug)
+        _emit_progress(progress_cb, "stage", code="agent_run_start", detail="开始模型推理与工具调度。", run_id=run_id)
+        (
+            text,
+            tool_events,
+            attachment_note,
+            execution_plan,
+            execution_trace,
+            debug_flow,
+            token_usage,
+            effective_model,
+        ) = agent.run_chat(
+            history_turns=session.get("turns", []),
+            summary=session.get("summary", ""),
+            user_message=req.message,
+            attachment_metas=attachments,
+            settings=req.settings,
+            progress_cb=progress_cb,
+        )
+        _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)
+        if missing_attachment_ids:
+            warning_msg = f"警告: {len(missing_attachment_ids)} 个附件未找到，可能已被清理或会话刷新，请重新上传。"
+            execution_trace.append(warning_msg)
+            _emit_progress(progress_cb, "trace", message=warning_msg, index=len(execution_trace), run_id=run_id)
 
-    stats_snapshot = token_stats_store.add_usage(
-        session_id=session["id"],
-        usage=token_usage,
-        model=selected_model,
-    )
-    _emit_progress(progress_cb, "stage", code="stats_saved", detail="Token 统计已更新。")
-    session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
-    global_totals_raw = stats_snapshot.get("totals", {})
-    response = ChatResponse(
-        session_id=session["id"],
-        text=text,
-        tool_events=tool_events,
-        execution_plan=execution_plan,
-        execution_trace=execution_trace,
-        debug_flow=debug_flow,
-        missing_attachment_ids=missing_attachment_ids,
-        token_usage=TokenUsage(**token_usage),
-        session_token_totals=TokenTotals(**session_totals_raw),
-        global_token_totals=TokenTotals(**global_totals_raw),
-        turn_count=len(session.get("turns", [])),
-        summarized=summarized,
-    )
-    _emit_progress(progress_cb, "stage", code="ready", detail="本轮结果已准备完成。")
-    return response
+            debug_item = {
+                "step": len(debug_flow) + 1,
+                "stage": "backend_warning",
+                "title": "附件检查",
+                "detail": f"检测到 {len(missing_attachment_ids)} 个附件 ID 丢失，已提示前端重新上传。",
+            }
+            debug_flow.append(debug_item)
+            _emit_progress(progress_cb, "debug", item=debug_item, run_id=run_id)
+
+        user_text = req.message.strip()
+        if attachment_note:
+            user_text = f"{user_text}\n\n[附件] {attachment_note}"
+
+        session_store.append_turn(
+            session,
+            role="user",
+            text=user_text,
+            attachments=[{"id": item.get("id"), "name": item.get("original_name")} for item in attachments],
+        )
+        session_store.append_turn(session, role="assistant", text=text)
+        session_store.save(session)
+        _emit_progress(progress_cb, "stage", code="session_saved", detail="会话已写入本地存储。", run_id=run_id)
+
+        selected_model = effective_model or req.settings.model or config.default_model
+        pricing_meta = estimate_usage_cost(
+            model=selected_model,
+            input_tokens=token_usage.get("input_tokens", 0),
+            output_tokens=token_usage.get("output_tokens", 0),
+        )
+        token_usage = {**token_usage, **pricing_meta}
+        if pricing_meta.get("pricing_known"):
+            pricing_trace = (
+                "费用估算: "
+                f"input ${pricing_meta.get('input_price_per_1m')}/1M, "
+                f"output ${pricing_meta.get('output_price_per_1m')}/1M."
+            )
+            execution_trace.append(pricing_trace)
+            _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace), run_id=run_id)
+
+            pricing_debug = {
+                "step": len(debug_flow) + 1,
+                "stage": "backend_pricing",
+                "title": "费用估算",
+                "detail": (
+                    f"按 {pricing_meta.get('pricing_model')} 计价："
+                    f"in ${pricing_meta.get('input_price_per_1m')}/1M, "
+                    f"out ${pricing_meta.get('output_price_per_1m')}/1M, "
+                    f"本轮约 ${pricing_meta.get('estimated_cost_usd')}."
+                ),
+            }
+            debug_flow.append(pricing_debug)
+            _emit_progress(progress_cb, "debug", item=pricing_debug, run_id=run_id)
+        else:
+            pricing_trace = f"费用估算未启用: 当前模型 {selected_model} 未匹配价格表。"
+            execution_trace.append(pricing_trace)
+            _emit_progress(progress_cb, "trace", message=pricing_trace, index=len(execution_trace), run_id=run_id)
+
+            pricing_debug = {
+                "step": len(debug_flow) + 1,
+                "stage": "backend_pricing",
+                "title": "费用估算",
+                "detail": f"模型 {selected_model} 未匹配内置价格表，仅统计 token。",
+            }
+            debug_flow.append(pricing_debug)
+            _emit_progress(progress_cb, "debug", item=pricing_debug, run_id=run_id)
+
+        stats_snapshot = token_stats_store.add_usage(
+            session_id=session["id"],
+            usage=token_usage,
+            model=selected_model,
+        )
+        _emit_progress(progress_cb, "stage", code="stats_saved", detail="Token 统计已更新。", run_id=run_id)
+        session_totals_raw = stats_snapshot.get("sessions", {}).get(session["id"], {})
+        global_totals_raw = stats_snapshot.get("totals", {})
+        response = ChatResponse(
+            session_id=session["id"],
+            run_id=run_id,
+            effective_model=selected_model,
+            queue_wait_ms=queue_wait_ms,
+            text=text,
+            tool_events=tool_events,
+            execution_plan=execution_plan,
+            execution_trace=execution_trace,
+            debug_flow=debug_flow,
+            missing_attachment_ids=missing_attachment_ids,
+            token_usage=TokenUsage(**token_usage),
+            session_token_totals=TokenTotals(**session_totals_raw),
+            global_token_totals=TokenTotals(**global_totals_raw),
+            turn_count=len(session.get("turns", [])),
+            summarized=summarized,
+        )
+        _emit_progress(progress_cb, "stage", code="ready", detail="本轮结果已准备完成。", run_id=run_id)
+        return response
 
 
 def _sse_pack(event: str, payload: dict[str, Any]) -> str:

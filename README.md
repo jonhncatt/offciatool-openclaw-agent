@@ -9,6 +9,9 @@
 - 对话请求支持流式进度（SSE），可实时看到后端阶段、工具调用与执行轨迹更新
 - 页面展示 Token 统计（本轮/会话累计/全局累计），除非手动清除会一直累积
 - 可控输出长度（short/normal/long）和 token 上限
+- 模型故障转移（fallback）+ 冷却，主模型失败时自动切换
+- 会话级串行执行队列，避免同一会话并发请求互相覆盖
+- 工具结果自动软/硬裁剪 + 旧工具上下文裁剪，降低长会话膨胀
 - LLM 驱动层使用 `langchain_openai`（支持 OpenAI 兼容网关）
 - 附件链路带“未找到附件”显式告警，避免只看到“上传成功”但上下文没带上
 - 输入框支持 `Enter` 直接发送，`Shift+Enter` 换行
@@ -102,7 +105,7 @@ cd $HOME\Desktop\officetool
 
 ### Agent 工具调用
 
-默认开放 10 个工具：
+默认开放 12 个工具：
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
@@ -114,6 +117,8 @@ cd $HOME\Desktop\officetool
 - `search_web`: 关键词联网搜索，返回候选链接与摘要（优先用于“先找链接”）
 - `fetch_web`: 联网抓取网页/JSON 文本
 - `download_web_file`: 二进制安全下载网页文件并落盘（PDF/ZIP/图片等）
+- `list_sessions`: 列出最近会话，支持跨会话回溯
+- `read_session_history`: 按 `session_id` 读取某个会话的摘要与历史轮次
 
 安全约束：
 
@@ -124,6 +129,7 @@ cd $HOME\Desktop\officetool
 - 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
 - `fetch_web` 遇到 PDF 会尽量抽取正文文本；需要原始文件时请用 `download_web_file`
 - 上传附件会把“本地路径”注入上下文；压缩包建议直接 `extract_zip(zip_path=该路径, ...)`
+- 可用 `OFFICETOOL_ENABLE_SESSION_TOOLS=false` 关闭会话检索工具（`list_sessions/read_session_history`）
 - 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互
 - 对“新闻/实时”类问题，后端会自动做一次 `search_web` 预搜索并把候选链接注入上下文，减少反复追问
 - 对“棒球新闻”等体育场景，`search_web` 会优先尝试 MLB/ESPN/Yahoo 等 RSS 源；搜索页被反爬时也会回退到可访问入口
@@ -138,6 +144,7 @@ cd $HOME\Desktop\officetool
 
 - 每次请求只带最近 `max_context_turns` 条历史消息（不是“思考轮数”）
 - 当历史轮数超过阈值时自动摘要，保留长期记忆但压缩 tokens
+- 工具输出过长时会自动软/硬裁剪；并在同一轮推理中按配置裁剪旧工具消息，减少上下文爆炸
 - 会话历史持久化在 `app/data/sessions/*.json`；页面刷新后会自动尝试恢复上次会话（基于浏览器本地保存的 session_id）
 - 左侧新增“历史会话”列表，可直接切换旧会话（不只保留当前会话）
 - 历史会话支持删除（左侧“刷新”旁边点“删除”）；删除当前会话后会自动切换到下一条
@@ -159,9 +166,13 @@ cd $HOME\Desktop\officetool
 - 如需脱敏并改走公司代理，请在 `.env` 设置：`OFFICETOOL_OPENAI_BASE_URL`
 - 如需公司 CA 证书，请设置：`OFFICETOOL_CA_CERT_PATH`（等价 `curl --cacert`）
 - 如需强制走 Chat Completions/tool calling 语义，请设置：`OFFICETOOL_USE_RESPONSES_API=false`
+- 模型 fallback 顺序可设置：`OFFICETOOL_MODEL_FALLBACKS=modelA,modelB`
+- 失败后模型冷却参数：`OFFICETOOL_MODEL_COOLDOWN_BASE_SEC`、`OFFICETOOL_MODEL_COOLDOWN_MAX_SEC`
 - 摘要模型变量为 `OFFICETOOL_SUMMARY_MODEL`（兼容别名 `OFFICETOOL_SUMMARY_MODE`）
 - 温度默认不强制传参；如需指定可设置 `OFFICETOOL_TEMPERATURE`（例如 `0` 或 `1`）
 - 如网页抓取报 `CERTIFICATE_VERIFY_FAILED`（如 basic constraints not marked critical），请设置：`OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`
+- 会话并发队列参数：`OFFICETOOL_MAX_CONCURRENT_RUNS`、`OFFICETOOL_RUN_QUEUE_WAIT_NOTICE_MS`
+- 工具上下文裁剪参数：`OFFICETOOL_TOOL_RESULT_SOFT_TRIM_CHARS`、`OFFICETOOL_TOOL_RESULT_HARD_CLEAR_CHARS`、`OFFICETOOL_TOOL_RESULT_HEAD_CHARS`、`OFFICETOOL_TOOL_RESULT_TAIL_CHARS`、`OFFICETOOL_TOOL_CONTEXT_PRUNE_KEEP_LAST`
 - 模型价格来源：OpenAI 官方定价页（[openai.com/api/pricing](https://openai.com/api/pricing/)），当前内置表按 2026-02-12 的公开价格写入 `app/pricing.py`
 
 ## 3. 目录结构

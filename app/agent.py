@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
@@ -111,6 +113,15 @@ class SearchWebArgs(BaseModel):
     timeout_sec: int = Field(default=12, ge=3, le=30)
 
 
+class ListSessionsArgs(BaseModel):
+    max_sessions: int = Field(default=20, ge=1, le=200)
+
+
+class ReadSessionHistoryArgs(BaseModel):
+    session_id: str
+    max_turns: int = Field(default=80, ge=1, le=800)
+
+
 class OfficeAgent:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -132,6 +143,8 @@ class OfficeAgent:
         self._StructuredTool = StructuredTool
         self._ChatOpenAI = ChatOpenAI
         self._lc_tools = self._build_langchain_tools()
+        self._model_failover_lock = threading.Lock()
+        self._model_failover_state: dict[str, dict[str, int | float]] = {}
 
     def maybe_compact_session(self, session: dict[str, Any], keep_last_turns: int) -> bool:
         turns = session.get("turns", [])
@@ -205,14 +218,20 @@ class OfficeAgent:
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
         progress_cb: Callable[[dict[str, Any]], None] | None = None,
-    ) -> tuple[str, list[ToolEvent], str, list[str], list[str], list[dict[str, Any]], dict[str, int]]:
-        model = settings.model or self.config.default_model
+    ) -> tuple[str, list[ToolEvent], str, list[str], list[str], list[dict[str, Any]], dict[str, int], str]:
+        requested_model = settings.model or self.config.default_model
+        effective_model = requested_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
         execution_plan = self._build_execution_plan(attachment_metas=attachment_metas, settings=settings)
         execution_trace: list[str] = []
         debug_flow: list[dict[str, Any]] = []
         usage_total = self._empty_usage()
         allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
+        session_tools_hint = (
+            "当用户提到“之前/上次会话里说过什么”时，可调用 list_sessions 和 read_session_history 主动检索历史，不要先让用户手工找 session_id。\n"
+            if self.config.enable_session_tools
+            else "当前未启用跨会话工具，不要调用 list_sessions/read_session_history。\n"
+        )
 
         debug_raw = bool(getattr(settings, "debug_raw", False))
         debug_limit = 120000 if debug_raw else 3200
@@ -263,6 +282,7 @@ class OfficeAgent:
                     "当用户要求查看/分析/改写文件时，默认已授权你直接读取相关文件并连续执行，不要逐步询问“要不要继续读下一步”。\n"
                     "分块读取大文件时，应在同一轮里自动继续调用 read_text_file(start_char, max_chars) 直到信息足够或达到安全上限，"
                     "仅在目标路径不明确、权限不足或文件不存在时再向用户提问。\n"
+                    f"{session_tools_hint}"
                     "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
                     "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
                     "fetch_web 遇到 PDF 会尝试抽取正文文本；若用户要求原文件落盘，必须用 download_web_file。\n"
@@ -342,7 +362,7 @@ class OfficeAgent:
             stage="backend_to_llm",
             title="后端 -> LLM 请求",
             detail=(
-                f"model={model}, enable_tools={settings.enable_tools}, max_output_tokens={settings.max_output_tokens}, "
+                f"model={requested_model}, enable_tools={settings.enable_tools}, max_output_tokens={settings.max_output_tokens}, "
                 f"debug_raw={debug_raw}, "
                 f"history_turns_used={min(len(history_turns), settings.max_context_turns)}, "
                 f"attachments={len(attachment_metas)}\n"
@@ -355,17 +375,22 @@ class OfficeAgent:
         add_trace("开始模型推理。")
 
         try:
-            ai_msg, runner = self._invoke_chat_with_runner(
+            ai_msg, runner, effective_model, failover_notes = self._invoke_chat_with_runner(
                 messages=messages,
-                model=model,
+                model=requested_model,
                 max_output_tokens=settings.max_output_tokens,
                 enable_tools=settings.enable_tools,
             )
+            for note in failover_notes:
+                add_trace(note)
             usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
             add_debug(
                 stage="llm_to_backend",
                 title="LLM -> 后端 首次响应",
-                detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
+                detail=(
+                    f"effective_model={effective_model}\n"
+                    f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
+                ),
             )
         except Exception as exc:
             add_trace(f"模型请求失败: {exc}")
@@ -378,6 +403,7 @@ class OfficeAgent:
                 execution_trace,
                 debug_flow,
                 usage_total,
+                effective_model,
             )
 
         auto_nudge_budget = 2
@@ -408,12 +434,23 @@ class OfficeAgent:
                         )
                     )
                     try:
-                        ai_msg = runner.invoke(messages)
+                        ai_msg, runner, effective_model, failover_notes = self._invoke_with_runner_recovery(
+                            runner=runner,
+                            messages=messages,
+                            model=effective_model,
+                            max_output_tokens=settings.max_output_tokens,
+                            enable_tools=settings.enable_tools,
+                        )
+                        for note in failover_notes:
+                            add_trace(note)
                         usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                         add_debug(
                             stage="llm_to_backend",
                             title="LLM -> 后端 自动纠偏后响应",
-                            detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
+                            detail=(
+                                f"effective_model={effective_model}\n"
+                                f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
+                            ),
                         )
                         continue
                     except Exception as exc:
@@ -447,13 +484,21 @@ class OfficeAgent:
                 )
 
                 call_id = call.get("id") or f"call_{len(tool_events)}"
+                tool_message_payload, trim_note = self._prepare_tool_result_for_llm(
+                    name=name,
+                    arguments=arguments,
+                    raw_result=result,
+                    raw_json=result_json,
+                )
                 messages.append(
                     self._ToolMessage(
-                        content=result_json,
+                        content=tool_message_payload,
                         tool_call_id=call_id,
                         name=name,
                     )
                 )
+                if trim_note:
+                    add_trace(trim_note)
                 add_debug(
                     stage="backend_tool",
                     title=f"后端工具执行结果 {name}",
@@ -465,18 +510,32 @@ class OfficeAgent:
                     detail=self._serialize_tool_message_for_debug(
                         name=name,
                         tool_call_id=call_id,
-                        content=result_json,
+                        content=tool_message_payload,
                         raw_mode=debug_raw,
                     ),
                 )
 
             try:
-                ai_msg = runner.invoke(messages)
+                pruned = self._prune_old_tool_messages(messages)
+                if pruned > 0:
+                    add_trace(f"已裁剪旧工具上下文 {pruned} 条，降低上下文膨胀。")
+                ai_msg, runner, effective_model, failover_notes = self._invoke_with_runner_recovery(
+                    runner=runner,
+                    messages=messages,
+                    model=effective_model,
+                    max_output_tokens=settings.max_output_tokens,
+                    enable_tools=settings.enable_tools,
+                )
+                for note in failover_notes:
+                    add_trace(note)
                 usage_total = self._merge_usage(usage_total, self._extract_usage_from_message(ai_msg))
                 add_debug(
                     stage="llm_to_backend",
                     title="LLM -> 后端 后续响应",
-                    detail=self._summarize_ai_response(ai_msg, raw_mode=debug_raw),
+                    detail=(
+                        f"effective_model={effective_model}\n"
+                        f"{self._summarize_ai_response(ai_msg, raw_mode=debug_raw)}"
+                    ),
                 )
             except Exception as exc:
                 add_trace(f"工具后续推理失败: {exc}")
@@ -489,6 +548,7 @@ class OfficeAgent:
                     execution_trace,
                     debug_flow,
                     usage_total,
+                    effective_model,
                 )
 
         text = self._content_to_text(getattr(ai_msg, "content", ""))
@@ -498,9 +558,12 @@ class OfficeAgent:
         add_debug(
             stage="llm_final",
             title="LLM 最终输出",
-            detail=f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}",
+            detail=(
+                f"effective_model={effective_model}\n"
+                f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}"
+            ),
         )
-        return text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, usage_total
+        return text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, usage_total, effective_model
 
     def _auto_prefetch_web(self, user_message: str, enable_tools: bool) -> dict[str, Any] | None:
         if not enable_tools:
@@ -579,6 +642,8 @@ class OfficeAgent:
         plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
         if settings.enable_tools:
             plan.append("如有必要自动连续调用工具（读文件/列目录/执行命令/联网搜索与抓取）获取事实，不逐步征询。")
+            if self.config.enable_session_tools:
+                plan.append("涉及历史对话时，自动调用会话工具检索旧 session。")
         plan.append("汇总结论并按你选择的回答长度输出。")
         return plan
 
@@ -606,23 +671,109 @@ class OfficeAgent:
         model: str,
         max_output_tokens: int,
         enable_tools: bool,
-    ) -> tuple[Any, Any]:
+    ) -> tuple[Any, Any, str, list[str]]:
+        candidates = self._build_model_candidates(model)
+        notes: list[str] = []
+        last_exc: Exception | None = None
+        attempted_any = False
+
+        for candidate in candidates:
+            cooldown_left = self._model_cooldown_left(candidate)
+            if cooldown_left > 0:
+                notes.append(f"模型 {candidate} 仍在冷却中（剩余约 {cooldown_left}s），跳过。")
+                continue
+
+            attempted_any = True
+            try:
+                response, runner, invoke_notes = self._invoke_single_model(
+                    messages=messages,
+                    model=candidate,
+                    max_output_tokens=max_output_tokens,
+                    enable_tools=enable_tools,
+                )
+                self._mark_model_success(candidate)
+                if candidate != model:
+                    notes.append(f"模型故障转移: {model} -> {candidate}")
+                notes.extend(invoke_notes)
+                return response, runner, candidate, notes
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_failover_error(exc):
+                    raise
+
+                cooldown_sec = self._mark_model_failure(candidate)
+                notes.append(
+                    f"模型 {candidate} 调用失败（{self._shorten(exc, 220)}），"
+                    f"进入冷却 {cooldown_sec}s，尝试下一个候选模型。"
+                )
+                continue
+
+        # If every candidate is cooling down, force-try the primary model once.
+        if not attempted_any and candidates:
+            primary = candidates[0]
+            notes.append("所有候选模型均处于冷却状态，强制重试主模型一次。")
+            response, runner, invoke_notes = self._invoke_single_model(
+                messages=messages,
+                model=primary,
+                max_output_tokens=max_output_tokens,
+                enable_tools=enable_tools,
+            )
+            notes.extend(invoke_notes)
+            return response, runner, primary, notes
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("No model candidates available")
+
+    def _invoke_with_runner_recovery(
+        self,
+        runner: Any,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+    ) -> tuple[Any, Any, str, list[str]]:
+        try:
+            return runner.invoke(messages), runner, model, []
+        except Exception as exc:
+            if not (self._is_failover_error(exc) or self._is_405_error(exc)):
+                raise
+            recovered_msg, recovered_runner, recovered_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                enable_tools=enable_tools,
+            )
+            prefix = f"模型 {model} 在持续推理阶段失败（{self._shorten(exc, 200)}），已自动恢复重试。"
+            return recovered_msg, recovered_runner, recovered_model, [prefix, *notes]
+
+    def _invoke_single_model(
+        self,
+        messages: list[Any],
+        model: str,
+        max_output_tokens: int,
+        enable_tools: bool,
+    ) -> tuple[Any, Any, list[str]]:
+        notes: list[str] = []
         llm = self._build_llm(model=model, max_output_tokens=max_output_tokens)
         runner = llm.bind_tools(self._lc_tools) if enable_tools else llm
         try:
-            return runner.invoke(messages), runner
+            return runner.invoke(messages), runner, notes
         except Exception as exc:
             if not self._is_405_error(exc):
                 raise
 
         fallback_use_responses = not self.config.openai_use_responses_api
+        notes.append(
+            f"模型 {model} 返回 405，自动切换 use_responses_api={str(fallback_use_responses).lower()} 重试。"
+        )
         llm_fb = self._build_llm(
             model=model,
             max_output_tokens=max_output_tokens,
             use_responses_api=fallback_use_responses,
         )
         runner_fb = llm_fb.bind_tools(self._lc_tools) if enable_tools else llm_fb
-        return runner_fb.invoke(messages), runner_fb
+        return runner_fb.invoke(messages), runner_fb, notes
 
     def _invoke_with_405_fallback(
         self,
@@ -631,7 +782,7 @@ class OfficeAgent:
         max_output_tokens: int,
         enable_tools: bool,
     ) -> Any:
-        response, _ = self._invoke_chat_with_runner(
+        response, _, _, _ = self._invoke_chat_with_runner(
             messages=messages,
             model=model,
             max_output_tokens=max_output_tokens,
@@ -639,8 +790,62 @@ class OfficeAgent:
         )
         return response
 
+    def _build_model_candidates(self, primary_model: str) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for raw in [primary_model, *self.config.model_fallbacks]:
+            model = str(raw or "").strip()
+            if not model:
+                continue
+            key = model.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(model)
+        return candidates
+
+    def _mark_model_success(self, model: str) -> None:
+        key = model.strip().lower()
+        if not key:
+            return
+        now = time.time()
+        with self._model_failover_lock:
+            state = self._model_failover_state.setdefault(key, {})
+            state["failures"] = 0
+            state["cooldown_until"] = 0.0
+            state["last_used_at"] = now
+
+    def _mark_model_failure(self, model: str) -> int:
+        key = model.strip().lower()
+        if not key:
+            return self.config.model_cooldown_base_sec
+        now = time.time()
+        with self._model_failover_lock:
+            state = self._model_failover_state.setdefault(key, {})
+            failures = int(state.get("failures") or 0) + 1
+            state["failures"] = failures
+            cooldown = min(
+                self.config.model_cooldown_max_sec,
+                self.config.model_cooldown_base_sec * (5 ** max(0, failures - 1)),
+            )
+            state["cooldown_until"] = now + cooldown
+            state["last_failed_at"] = now
+            return int(cooldown)
+
+    def _model_cooldown_left(self, model: str) -> int:
+        key = model.strip().lower()
+        if not key:
+            return 0
+        now = time.time()
+        with self._model_failover_lock:
+            state = self._model_failover_state.get(key) or {}
+            until = float(state.get("cooldown_until") or 0.0)
+        if until <= now:
+            return 0
+        return int(until - now)
+
     def _build_langchain_tools(self) -> list[Any]:
-        return [
+        tools = [
             self._StructuredTool.from_function(
                 name="run_shell",
                 description="Run a safe shell command in workspace. Supports simple commands without pipes.",
@@ -706,6 +911,24 @@ class OfficeAgent:
                 func=self._search_web_tool,
             ),
         ]
+        if self.config.enable_session_tools:
+            tools.append(
+                self._StructuredTool.from_function(
+                    name="list_sessions",
+                    description="List recent local chat sessions for cross-session context lookup.",
+                    args_schema=ListSessionsArgs,
+                    func=self._list_sessions_tool,
+                )
+            )
+            tools.append(
+                self._StructuredTool.from_function(
+                    name="read_session_history",
+                    description="Read one local chat session history by session_id.",
+                    args_schema=ReadSessionHistoryArgs,
+                    func=self._read_session_history_tool,
+                )
+            )
+        return tools
 
     def _run_shell_tool(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> str:
         result = self.tools.run_shell(command=command, cwd=cwd, timeout_sec=timeout_sec)
@@ -802,6 +1025,14 @@ class OfficeAgent:
 
     def _search_web_tool(self, query: str, max_results: int = 5, timeout_sec: int = 12) -> str:
         result = self.tools.search_web(query=query, max_results=max_results, timeout_sec=timeout_sec)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _list_sessions_tool(self, max_sessions: int = 20) -> str:
+        result = self.tools.list_sessions(max_sessions=max_sessions)
+        return json.dumps(result, ensure_ascii=False)
+
+    def _read_session_history_tool(self, session_id: str, max_turns: int = 80) -> str:
+        result = self.tools.read_session_history(session_id=session_id, max_turns=max_turns)
         return json.dumps(result, ensure_ascii=False)
 
     def _build_user_content(
@@ -931,6 +1162,77 @@ class OfficeAgent:
                     issues.append(f"{name} 附件读取失败: {exc}")
 
         return parts, "；".join(notes), issues
+
+    def _prepare_tool_result_for_llm(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        raw_result: Any,
+        raw_json: str,
+    ) -> tuple[str, str | None]:
+        text = str(raw_json or "")
+        length = len(text)
+        soft = max(2000, int(self.config.tool_result_soft_trim_chars))
+        hard = max(soft + 1, int(self.config.tool_result_hard_clear_chars))
+        head = max(200, min(int(self.config.tool_result_head_chars), max(200, soft // 2)))
+        tail = max(200, min(int(self.config.tool_result_tail_chars), max(200, soft // 2)))
+
+        if length <= soft:
+            return text, None
+
+        if length >= hard:
+            compact_payload = {
+                "ok": raw_result.get("ok") if isinstance(raw_result, dict) else None,
+                "tool": name,
+                "arguments": arguments,
+                "trimmed": "hard",
+                "original_chars": length,
+                "content_preview_head": text[:head],
+                "content_preview_tail": text[-tail:] if tail > 0 else "",
+                "note": "Tool result was too large and hard-pruned for context safety.",
+            }
+            return (
+                json.dumps(compact_payload, ensure_ascii=False),
+                f"工具结果过大({length} chars)，已做硬裁剪后再喂给模型。",
+            )
+
+        trimmed = f"{text[:head]}\n...[tool_result_trimmed {length} chars]...\n{text[-tail:]}"
+        return trimmed, f"工具结果较大({length} chars)，已做软裁剪后继续推理。"
+
+    def _prune_old_tool_messages(self, messages: list[Any]) -> int:
+        keep_last = max(0, int(self.config.tool_context_prune_keep_last))
+        tool_indexes: list[int] = []
+        total_chars = 0
+        for idx, msg in enumerate(messages):
+            if type(msg).__name__ == "ToolMessage":
+                tool_indexes.append(idx)
+                total_chars += len(self._content_to_text(getattr(msg, "content", "")))
+        if total_chars <= int(self.config.tool_result_hard_clear_chars):
+            return 0
+        if len(tool_indexes) <= keep_last:
+            return 0
+
+        pruned = 0
+        candidates = tool_indexes[:-keep_last] if keep_last > 0 else tool_indexes
+        for idx in candidates:
+            msg = messages[idx]
+            content = self._content_to_text(getattr(msg, "content", ""))
+            if "[tool_result_pruned]" in content:
+                continue
+            tool_call_id = str(getattr(msg, "tool_call_id", "") or f"pruned_{idx}")
+            name = str(getattr(msg, "name", "") or "tool")
+            placeholder = {
+                "tool": name,
+                "trimmed": "history_pruned",
+                "note": "Older tool result pruned to control context growth.",
+            }
+            messages[idx] = self._ToolMessage(
+                content=json.dumps(placeholder, ensure_ascii=False),
+                tool_call_id=tool_call_id,
+                name=name,
+            )
+            pruned += 1
+        return pruned
 
     def _content_to_text(self, content: Any) -> str:
         if isinstance(content, str):
@@ -1161,6 +1463,33 @@ class OfficeAgent:
                 break
         normalized = urlunparse((parsed.scheme, parsed.netloc, path.rstrip("/"), parsed.params, parsed.query, parsed.fragment))
         return normalized
+
+    def _is_failover_error(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        hints = (
+            "429",
+            "rate limit",
+            "rate_limit",
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "service unavailable",
+            "overloaded",
+            "connection reset",
+            "connection aborted",
+            "connection error",
+            "502",
+            "503",
+            "504",
+            "quota",
+            "insufficient",
+            "authentication",
+            "unauthorized",
+            "forbidden",
+            "401",
+            "403",
+        )
+        return any(item in text for item in hints)
 
     def _is_405_error(self, exc: Exception) -> bool:
         text = str(exc).lower()

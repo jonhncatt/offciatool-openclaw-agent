@@ -56,6 +56,9 @@ class TokenTotals(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
+    run_id: str | None = None
+    effective_model: str | None = None
+    queue_wait_ms: int = 0
     text: str
     tool_events: list[ToolEvent] = Field(default_factory=list)
     execution_plan: list[str] = Field(default_factory=list)

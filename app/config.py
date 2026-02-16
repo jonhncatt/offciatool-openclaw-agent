@@ -93,12 +93,23 @@ class AppConfig:
     openai_temperature: float | None
     openai_use_responses_api: bool
     default_model: str
+    model_fallbacks: list[str]
+    model_cooldown_base_sec: int
+    model_cooldown_max_sec: int
     summary_model: str
     system_prompt: str
     summary_trigger_turns: int
     max_context_turns: int
     max_attachment_chars: int
     max_upload_mb: int
+    tool_result_soft_trim_chars: int
+    tool_result_hard_clear_chars: int
+    tool_result_head_chars: int
+    tool_result_tail_chars: int
+    tool_context_prune_keep_last: int
+    max_concurrent_runs: int
+    run_queue_wait_notice_ms: int
+    enable_session_tools: bool
     allowed_commands: list[str]
 
 
@@ -169,6 +180,30 @@ def load_config() -> AppConfig:
     ).strip().lower()
     openai_use_responses_api = use_responses_raw in {"1", "true", "yes", "on"}
 
+    model_fallbacks = _split_csv(
+        _env("OFFICETOOL_MODEL_FALLBACKS", "OFFCIATOOL_MODEL_FALLBACKS", default="") or ""
+    )
+    model_cooldown_base_sec = int(
+        (
+            _env(
+                "OFFICETOOL_MODEL_COOLDOWN_BASE_SEC",
+                "OFFCIATOOL_MODEL_COOLDOWN_BASE_SEC",
+                default="60",
+            )
+            or "60"
+        ).strip()
+    )
+    model_cooldown_max_sec = int(
+        (
+            _env(
+                "OFFICETOOL_MODEL_COOLDOWN_MAX_SEC",
+                "OFFCIATOOL_MODEL_COOLDOWN_MAX_SEC",
+                default="3600",
+            )
+            or "3600"
+        ).strip()
+    )
+
     allow_any_raw = (_env("OFFICETOOL_ALLOW_ANY_PATH", "OFFCIATOOL_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
     allow_any_path = allow_any_raw in {"1", "true", "yes", "on"}
 
@@ -215,6 +250,77 @@ def load_config() -> AppConfig:
         seen.add(key)
         allowed_roots.append(root)
 
+    tool_result_soft_trim_chars = int(
+        (
+            _env(
+                "OFFICETOOL_TOOL_RESULT_SOFT_TRIM_CHARS",
+                "OFFCIATOOL_TOOL_RESULT_SOFT_TRIM_CHARS",
+                default="40000",
+            )
+            or "40000"
+        ).strip()
+    )
+    tool_result_hard_clear_chars = int(
+        (
+            _env(
+                "OFFICETOOL_TOOL_RESULT_HARD_CLEAR_CHARS",
+                "OFFCIATOOL_TOOL_RESULT_HARD_CLEAR_CHARS",
+                default="180000",
+            )
+            or "180000"
+        ).strip()
+    )
+    tool_result_head_chars = int(
+        (
+            _env(
+                "OFFICETOOL_TOOL_RESULT_HEAD_CHARS",
+                "OFFCIATOOL_TOOL_RESULT_HEAD_CHARS",
+                default="8000",
+            )
+            or "8000"
+        ).strip()
+    )
+    tool_result_tail_chars = int(
+        (
+            _env(
+                "OFFICETOOL_TOOL_RESULT_TAIL_CHARS",
+                "OFFCIATOOL_TOOL_RESULT_TAIL_CHARS",
+                default="4000",
+            )
+            or "4000"
+        ).strip()
+    )
+    tool_context_prune_keep_last = int(
+        (
+            _env(
+                "OFFICETOOL_TOOL_CONTEXT_PRUNE_KEEP_LAST",
+                "OFFCIATOOL_TOOL_CONTEXT_PRUNE_KEEP_LAST",
+                default="3",
+            )
+            or "3"
+        ).strip()
+    )
+    max_concurrent_runs = int(
+        (
+            _env("OFFICETOOL_MAX_CONCURRENT_RUNS", "OFFCIATOOL_MAX_CONCURRENT_RUNS", default="2")
+            or "2"
+        ).strip()
+    )
+    run_queue_wait_notice_ms = int(
+        (
+            _env(
+                "OFFICETOOL_RUN_QUEUE_WAIT_NOTICE_MS",
+                "OFFCIATOOL_RUN_QUEUE_WAIT_NOTICE_MS",
+                default="1500",
+            )
+            or "1500"
+        ).strip()
+    )
+    enable_session_tools_raw = (
+        _env("OFFICETOOL_ENABLE_SESSION_TOOLS", "OFFCIATOOL_ENABLE_SESSION_TOOLS", default="true") or "true"
+    ).strip().lower()
+    enable_session_tools = enable_session_tools_raw in {"1", "true", "yes", "on"}
+
     return AppConfig(
         workspace_root=workspace_root,
         sessions_dir=sessions_dir,
@@ -235,6 +341,9 @@ def load_config() -> AppConfig:
         default_model=(
             _env("OFFICETOOL_DEFAULT_MODEL", "OFFCIATOOL_DEFAULT_MODEL", default="gpt-5.1-chat") or "gpt-5.1-chat"
         ),
+        model_fallbacks=model_fallbacks,
+        model_cooldown_base_sec=max(10, min(3600, model_cooldown_base_sec)),
+        model_cooldown_max_sec=max(60, min(86400, model_cooldown_max_sec)),
         summary_model=(
             _env(
                 "OFFICETOOL_SUMMARY_MODEL",
@@ -278,5 +387,13 @@ def load_config() -> AppConfig:
             1,
             min(2048, int(_env("OFFICETOOL_MAX_UPLOAD_MB", "OFFCIATOOL_MAX_UPLOAD_MB", default="200") or "200")),
         ),
+        tool_result_soft_trim_chars=max(2000, min(1_000_000, tool_result_soft_trim_chars)),
+        tool_result_hard_clear_chars=max(4000, min(2_000_000, tool_result_hard_clear_chars)),
+        tool_result_head_chars=max(500, min(200_000, tool_result_head_chars)),
+        tool_result_tail_chars=max(500, min(200_000, tool_result_tail_chars)),
+        tool_context_prune_keep_last=max(0, min(20, tool_context_prune_keep_last)),
+        max_concurrent_runs=max(1, min(32, max_concurrent_runs)),
+        run_queue_wait_notice_ms=max(0, min(120_000, run_queue_wait_notice_ms)),
+        enable_session_tools=enable_session_tools,
         allowed_commands=_split_csv(allowed_commands_raw),
     )

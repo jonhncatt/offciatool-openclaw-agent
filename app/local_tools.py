@@ -721,6 +721,32 @@ class LocalToolExecutor:
                     "additionalProperties": False,
                 },
             },
+            {
+                "type": "function",
+                "name": "list_sessions",
+                "description": "List recent local chat sessions so the agent can locate past context.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "max_sessions": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
+                "name": "read_session_history",
+                "description": "Read one local chat session's summary and recent turns by session_id.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string"},
+                        "max_turns": {"type": "integer", "minimum": 1, "maximum": 800, "default": 80},
+                    },
+                    "required": ["session_id"],
+                    "additionalProperties": False,
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -744,6 +770,10 @@ class LocalToolExecutor:
             return self.download_web_file(**arguments)
         if name == "search_web":
             return self.search_web(**arguments)
+        if name == "list_sessions":
+            return self.list_sessions(**arguments)
+        if name == "read_session_history":
+            return self.read_session_history(**arguments)
         return {"ok": False, "error": f"Unknown tool: {name}"}
 
     def run_shell(self, command: str, cwd: str = ".", timeout_sec: int = 15) -> dict[str, Any]:
@@ -817,6 +847,91 @@ class LocalToolExecutor:
             return {"ok": True, "path": str(real_path), "entries": entries}
         except Exception as exc:
             return {"ok": False, "error": f"list_directory failed: {exc}"}
+
+    def list_sessions(self, max_sessions: int = 20) -> dict[str, Any]:
+        try:
+            limit = max(1, min(200, int(max_sessions)))
+            rows: list[dict[str, Any]] = []
+            files = sorted(
+                self.config.sessions_dir.glob("*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for path in files[:limit]:
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                sid = str(payload.get("id") or path.stem)
+                turns = payload.get("turns", [])
+                if not isinstance(turns, list):
+                    turns = []
+                title = "新会话"
+                preview = ""
+                for turn in turns:
+                    if not isinstance(turn, dict):
+                        continue
+                    role = str(turn.get("role") or "")
+                    text = str(turn.get("text") or "").strip()
+                    if role == "user" and text:
+                        title = text.replace("\n", " ")[:60]
+                        break
+                if turns:
+                    last = turns[-1]
+                    if isinstance(last, dict):
+                        preview = str(last.get("text") or "").replace("\n", " ").strip()[:120]
+                rows.append(
+                    {
+                        "session_id": sid,
+                        "title": title,
+                        "preview": preview,
+                        "turn_count": len(turns),
+                        "updated_at": str(payload.get("updated_at") or ""),
+                        "created_at": str(payload.get("created_at") or ""),
+                    }
+                )
+            return {"ok": True, "count": len(rows), "sessions": rows}
+        except Exception as exc:
+            return {"ok": False, "error": f"list_sessions failed: {exc}"}
+
+    def read_session_history(self, session_id: str, max_turns: int = 80) -> dict[str, Any]:
+        sid = str(session_id or "").strip()
+        if not sid:
+            return {"ok": False, "error": "session_id cannot be empty"}
+        if "/" in sid or "\\" in sid or ".." in sid:
+            return {"ok": False, "error": "Invalid session_id"}
+        try:
+            session_path = (self.config.sessions_dir / f"{sid}.json").resolve()
+            if not _is_within(session_path, self.config.sessions_dir):
+                return {"ok": False, "error": "Invalid session path"}
+            if not session_path.exists():
+                return {"ok": False, "error": f"Session not found: {sid}"}
+            payload = json.loads(session_path.read_text(encoding="utf-8"))
+            turns = payload.get("turns", [])
+            if not isinstance(turns, list):
+                turns = []
+            keep = max(1, min(800, int(max_turns)))
+            sliced = turns[-keep:]
+            trimmed_turns: list[dict[str, str]] = []
+            for turn in sliced:
+                if not isinstance(turn, dict):
+                    continue
+                trimmed_turns.append(
+                    {
+                        "role": str(turn.get("role") or "user"),
+                        "text": str(turn.get("text") or ""),
+                        "created_at": str(turn.get("created_at") or ""),
+                    }
+                )
+            return {
+                "ok": True,
+                "session_id": sid,
+                "summary": str(payload.get("summary") or ""),
+                "turn_count": len(turns),
+                "turns": trimmed_turns,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"read_session_history failed: {exc}"}
 
     def read_text_file(self, path: str, start_char: int = 0, max_chars: int = 200000) -> dict[str, Any]:
         try:

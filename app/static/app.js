@@ -795,6 +795,15 @@ async function sendMessage() {
 
     state.sessionId = data.session_id;
     refreshSession();
+    const selectedModel = String(body?.settings?.model || "").trim();
+    const effectiveModel = String(data?.effective_model || "").trim();
+    const queueWaitMs = Number(data?.queue_wait_ms || 0);
+    if (effectiveModel && (!selectedModel || selectedModel !== effectiveModel)) {
+      addBubble("system", `本轮模型自动切换：${selectedModel || "(默认)"} -> ${effectiveModel}`);
+    }
+    if (queueWaitMs >= 1000) {
+      addBubble("system", `本轮排队等待 ${queueWaitMs} ms 后开始执行。`);
+    }
 
     if (data.summarized) {
       addBubble("system", "历史上下文已自动压缩摘要，避免窗口过长。", null);
