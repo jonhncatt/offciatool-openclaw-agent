@@ -50,7 +50,7 @@ def _load_dotenv_if_present() -> None:
         seen.add(key)
 
         for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
+            line = raw_line.strip().lstrip("\ufeff")
             if not line or line.startswith("#"):
                 continue
             if line.startswith("export "):

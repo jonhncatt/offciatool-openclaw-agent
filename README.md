@@ -51,7 +51,7 @@ py -3.11 -m venv .venv
 Copy-Item .env.example .env
 # 编辑 .env（填 OPENAI_API_KEY；需要的话再填公司网关和 CA）
 
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.\run.ps1
 ```
 
 ### Windows 启动（CMD）
@@ -67,7 +67,7 @@ py -3.11 -m venv .venv
 copy .env.example .env
 rem 编辑 .env（填 OPENAI_API_KEY；需要的话再填公司网关和 CA）
 
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+powershell -ExecutionPolicy Bypass -File .\run.ps1
 ```
 
 ### Windows 日常启动（后续每次）
@@ -77,7 +77,7 @@ rem 编辑 .env（填 OPENAI_API_KEY；需要的话再填公司网关和 CA）
 ```powershell
 cd $HOME\Desktop\officetool
 git pull
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+.\run.ps1
 ```
 
 ### 127.0.0.1:8080 打不开时怎么查
@@ -86,6 +86,12 @@ git pull
 
 ```bash
 lsof -nP -iTCP:8080 -sTCP:LISTEN
+```
+
+Windows（PowerShell）可用：
+
+```powershell
+netstat -ano | findstr :8080
 ```
 
 如果没有输出，通常是服务没启动成功。最常见原因是 `OPENAI_API_KEY` 没有配置，`run.sh` 会直接退出并打印：
@@ -97,8 +103,9 @@ OPENAI_API_KEY is not set. Please add it to .env or export it.
 建议按下面顺序排查：
 
 1. 检查 `.env` 是否存在且包含 `OPENAI_API_KEY=...`
-2. 在项目根目录执行 `./run.sh`，确认终端出现 `Uvicorn running on http://0.0.0.0:8080`
-3. 用健康检查验证服务：`curl http://127.0.0.1:8080/api/health`
+2. 在项目根目录执行启动命令（macOS/Linux: `./run.sh`；Windows: `.\run.ps1`），确认终端出现 `Uvicorn running on http://0.0.0.0:8080`
+3. 用健康检查验证服务（macOS/Linux: `curl http://127.0.0.1:8080/api/health`；Windows PowerShell: `Invoke-RestMethod http://127.0.0.1:8080/api/health`）
+4. 浏览器务必使用 `http://127.0.0.1:8080`（不要用 `https://`）
 
 检查 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 是否生效：
 
