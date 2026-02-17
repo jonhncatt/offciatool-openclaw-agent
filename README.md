@@ -19,7 +19,9 @@
 ## 1. 快速启动
 
 ```bash
-cd /Users/dalizhou/Desktop/officetool
+cd /Users/<YOU>/Desktop
+git clone https://github.com/jonhncatt/offciatool-openclaw-agent.git
+cd offciatool-openclaw-agent
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -27,21 +29,21 @@ cp .env.example .env
 # 编辑 .env，填入 OPENAI_API_KEY
 # 如需接公司网关，再填 OFFICETOOL_OPENAI_BASE_URL=https://<YOUR_COMPANY_API_BASE>/v1
 # 如需内部根证书，再填 OFFICETOOL_CA_CERT_PATH=/absolute/path/to/your-root-ca.cer
-uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+./run.sh
 ```
 
 打开浏览器：
 
 - [http://127.0.0.1:8080](http://127.0.0.1:8080)
 - 说明：应用会自动读取项目根目录 `.env`，无需再手动 `export` 或 `setx`
+- 说明：`run.sh` 会先检查 `OPENAI_API_KEY`，未配置会直接退出并提示错误
 
 ### Windows 启动（PowerShell）
 
 ```powershell
 cd $HOME\Desktop
-git clone https://github.com/jonhncatt/offciatool.git officetool
+git clone https://github.com/jonhncatt/offciatool-openclaw-agent.git officetool
 cd .\officetool
-git checkout codex/office-agent
 
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
@@ -56,9 +58,8 @@ Copy-Item .env.example .env
 
 ```bat
 cd %USERPROFILE%\Desktop
-git clone https://github.com/jonhncatt/offciatool.git officetool
+git clone https://github.com/jonhncatt/offciatool-openclaw-agent.git officetool
 cd officetool
-git checkout codex/office-agent
 
 py -3.11 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
@@ -78,6 +79,26 @@ cd $HOME\Desktop\officetool
 git pull
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```
+
+### 127.0.0.1:8080 打不开时怎么查
+
+先确认服务进程是否真的在监听 8080：
+
+```bash
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+```
+
+如果没有输出，通常是服务没启动成功。最常见原因是 `OPENAI_API_KEY` 没有配置，`run.sh` 会直接退出并打印：
+
+```text
+OPENAI_API_KEY is not set. Please add it to .env or export it.
+```
+
+建议按下面顺序排查：
+
+1. 检查 `.env` 是否存在且包含 `OPENAI_API_KEY=...`
+2. 在项目根目录执行 `./run.sh`，确认终端出现 `Uvicorn running on http://0.0.0.0:8080`
+3. 用健康检查验证服务：`curl http://127.0.0.1:8080/api/health`
 
 检查 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 是否生效：
 
