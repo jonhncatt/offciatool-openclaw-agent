@@ -399,6 +399,8 @@ button.small {
   align-self: flex-start;
   background: #fdfefb;
   border: 1px solid #d8dfd5;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .bubble.system {
@@ -408,6 +410,49 @@ button.small {
   border: 1px solid #eac99c;
   color: #6e3d1f;
   font-size: 12px;
+}
+
+.bubble.assistant p {
+  margin: 0 0 10px;
+}
+
+.bubble.assistant p:last-child {
+  margin-bottom: 0;
+}
+
+.bubble.assistant ul,
+.bubble.assistant ol {
+  margin: 0 0 10px 20px;
+  padding: 0;
+}
+
+.bubble.assistant pre {
+  margin: 8px 0;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #ded7f0;
+  background: #f4f1fb;
+  overflow: auto;
+  white-space: pre;
+}
+
+.bubble.assistant code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: #f1edfa;
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+.bubble.assistant pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+.bubble.assistant a {
+  color: #5d3faa;
+  text-decoration: underline;
 }
 
 .tool-box {

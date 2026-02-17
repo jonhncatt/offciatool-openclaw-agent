@@ -105,10 +105,64 @@ function applyModePreset(mode, announce = true) {
 function addBubble(role, text) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${role}`;
-  bubble.textContent = text;
+  const value = typeof text === "string" ? text : String(text ?? "");
+  if (role === "assistant") {
+    bubble.innerHTML = renderAssistantMarkdown(value);
+  } else {
+    bubble.textContent = value;
+  }
 
   chatList.appendChild(bubble);
   chatList.scrollTop = chatList.scrollHeight;
+}
+
+function escapeHtml(raw) {
+  return String(raw)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderAssistantMarkdown(text) {
+  const source = String(text ?? "");
+  const markedApi = window.marked;
+  const purifyApi = window.DOMPurify;
+
+  if (markedApi && purifyApi && typeof markedApi.parse === "function") {
+    try {
+      const html = markedApi.parse(source, {
+        gfm: true,
+        breaks: true,
+      });
+      return purifyApi.sanitize(html, { USE_PROFILES: { html: true } });
+    } catch {}
+  }
+
+  return renderMarkdownLite(source);
+}
+
+function renderMarkdownLite(text) {
+  const source = String(text ?? "");
+  const codeBlocks = [];
+  const withCodeTokens = source.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const token = `__MD_CODE_BLOCK_${codeBlocks.length}__`;
+    const codeHtml = `<pre><code>${escapeHtml(String(code).replace(/^\n+|\n+$/g, ""))}</code></pre>`;
+    codeBlocks.push({ token, html: codeHtml });
+    return token;
+  });
+
+  let html = escapeHtml(withCodeTokens);
+  html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  html = html.replace(/\n/g, "<br>");
+
+  codeBlocks.forEach((item) => {
+    html = html.replace(item.token, item.html);
+  });
+  return html;
 }
 
 function formatNumberedLines(title, items) {
