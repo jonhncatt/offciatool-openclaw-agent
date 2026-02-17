@@ -12,8 +12,15 @@ if [ -f .env ]; then
 fi
 
 if [ -z "${OPENAI_API_KEY:-}" ]; then
-  echo "OPENAI_API_KEY is not set. Please add it to .env or export it." >&2
-  exit 1
+  echo "WARN: OPENAI_API_KEY is not set. Server will start, but /api/chat requests will fail until key is configured." >&2
+fi
+
+if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+  exec "$ROOT_DIR/.venv/bin/python" -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 fi
 
 exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload

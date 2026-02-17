@@ -38,8 +38,7 @@ if (Test-Path ".env") {
 }
 
 if (-not $env:OPENAI_API_KEY) {
-  Write-Error "OPENAI_API_KEY is not set. Please add it to .env or set it in your shell."
-  exit 1
+  Write-Warning "OPENAI_API_KEY is not set. Server will start, but /api/chat requests will fail until key is configured."
 }
 
 $venvPython = Join-Path $rootDir ".venv\Scripts\python.exe"

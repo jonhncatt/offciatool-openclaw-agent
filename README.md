@@ -36,7 +36,7 @@ cp .env.example .env
 
 - [http://127.0.0.1:8080](http://127.0.0.1:8080)
 - 说明：应用会自动读取项目根目录 `.env`，无需再手动 `export` 或 `setx`
-- 说明：`run.sh` 会先检查 `OPENAI_API_KEY`，未配置会直接退出并提示错误
+- 说明：未配置 `OPENAI_API_KEY` 也会启动并监听端口，但 `/api/chat` 会报错直到配置好 key
 
 ### Windows 启动（PowerShell）
 
@@ -94,10 +94,12 @@ Windows（PowerShell）可用：
 netstat -ano | findstr :8080
 ```
 
-如果没有输出，通常是服务没启动成功。最常见原因是 `OPENAI_API_KEY` 没有配置，`run.sh` 会直接退出并打印：
+如果没有输出，通常是服务没启动成功。常见原因包括端口被占用、Python/依赖未安装、或启动命令未在项目根目录执行。
+
+如果 `OPENAI_API_KEY` 没有配置，启动脚本会打印警告（但不会阻止监听）：
 
 ```text
-OPENAI_API_KEY is not set. Please add it to .env or export it.
+WARN: OPENAI_API_KEY is not set. Server will start, but /api/chat requests will fail until key is configured.
 ```
 
 建议按下面顺序排查：
@@ -106,6 +108,14 @@ OPENAI_API_KEY is not set. Please add it to .env or export it.
 2. 在项目根目录执行启动命令（macOS/Linux: `./run.sh`；Windows: `.\run.ps1`），确认终端出现 `Uvicorn running on http://0.0.0.0:8080`
 3. 用健康检查验证服务（macOS/Linux: `curl http://127.0.0.1:8080/api/health`；Windows PowerShell: `Invoke-RestMethod http://127.0.0.1:8080/api/health`）
 4. 浏览器务必使用 `http://127.0.0.1:8080`（不要用 `https://`）
+
+如果 `netstat -ano | findstr :8080` 显示已有 `LISTENING`，说明 8080 被旧进程占用，可在 Windows PowerShell 用：
+
+```powershell
+taskkill /PID <PID> /F
+```
+
+清理后再启动 `.\run.ps1`。
 
 检查 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 是否生效：
 
