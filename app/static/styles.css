@@ -1,5 +1,5 @@
 :root {
-  --bg: #f6f7f2;
+  --bg: #f7f3fc;
   --card: #ffffff;
   --ink: #1b241c;
   --line: #cfd7ca;
@@ -16,8 +16,8 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: radial-gradient(circle at 10% 0%, #d7e4d4 0%, transparent 32%),
-    radial-gradient(circle at 100% 100%, #dae8df 0%, transparent 40%), var(--bg);
+  background: radial-gradient(circle at 10% 0%, #e6d9f6 0%, transparent 32%),
+    radial-gradient(circle at 100% 100%, #ebe1f8 0%, transparent 40%), var(--bg);
   color: var(--ink);
   font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
   min-height: 100%;
@@ -35,13 +35,13 @@ body {
 }
 
 .bg1 {
-  background: #2f8d58;
+  background: #8e66c7;
   top: -12vw;
   left: -18vw;
 }
 
 .bg2 {
-  background: #ba6e42;
+  background: #b38adf;
   bottom: -18vw;
   right: -12vw;
 }
