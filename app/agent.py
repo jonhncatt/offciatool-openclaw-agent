@@ -84,6 +84,13 @@ class WriteTextFileArgs(BaseModel):
     create_dirs: bool = True
 
 
+class AppendTextFileArgs(BaseModel):
+    path: str
+    content: str
+    create_if_missing: bool = True
+    create_dirs: bool = True
+
+
 class ReplaceInFileArgs(BaseModel):
     path: str
     old_text: str
@@ -278,10 +285,12 @@ class OfficeAgent:
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "解压 zip 文件优先使用 extract_zip；"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
-                    "改写或新建文件优先使用 replace_in_file/write_text_file，尽量使用绝对路径。\n"
+                    "改写或新建文件优先使用 replace_in_file/write_text_file（大内容可分块配合 append_text_file），尽量使用绝对路径。\n"
                     "当用户要求查看/分析/改写文件时，默认已授权你直接读取相关文件并连续执行，不要逐步询问“要不要继续读下一步”。\n"
                     "分块读取大文件时，应在同一轮里自动继续调用 read_text_file(start_char, max_chars) 直到信息足够或达到安全上限，"
                     "仅在目标路径不明确、权限不足或文件不存在时再向用户提问。\n"
+                    "默认不要向用户逐步播报内部工具执行过程（例如“正在自动写入/继续分块写入/继续读取”）；"
+                    "除非用户明确要求过程日志，否则直接给最终结果和必要说明。\n"
                     f"{session_tools_hint}"
                     "联网任务优先先用 search_web(query) 自动找候选链接，再用 fetch_web(url) 读正文；"
                     "如果用户要求“下载/保存文件（PDF/ZIP/图片等）”，优先使用 download_web_file，不要说只能写 UTF-8。\n"
@@ -887,6 +896,12 @@ class OfficeAgent:
                 func=self._write_text_file_tool,
             ),
             self._StructuredTool.from_function(
+                name="append_text_file",
+                description="Append UTF-8 text to a file (or create if missing) in workspace.",
+                args_schema=AppendTextFileArgs,
+                func=self._append_text_file_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="replace_in_file",
                 description="Replace target text in a UTF-8 text file in workspace.",
                 args_schema=ReplaceInFileArgs,
@@ -979,6 +994,21 @@ class OfficeAgent:
             path=path,
             content=content,
             overwrite=overwrite,
+            create_dirs=create_dirs,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _append_text_file_tool(
+        self,
+        path: str,
+        content: str,
+        create_if_missing: bool = True,
+        create_dirs: bool = True,
+    ) -> str:
+        result = self.tools.append_text_file(
+            path=path,
+            content=content,
+            create_if_missing=create_if_missing,
             create_dirs=create_dirs,
         )
         return json.dumps(result, ensure_ascii=False)

@@ -649,6 +649,22 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "append_text_file",
+                "description": "Append UTF-8 text to an existing file (or create new file) in workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                        "create_if_missing": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "replace_in_file",
                 "description": "Replace target text in a UTF-8 text file in workspace.",
                 "parameters": {
@@ -762,6 +778,8 @@ class LocalToolExecutor:
             return self.extract_zip(**arguments)
         if name == "write_text_file":
             return self.write_text_file(**arguments)
+        if name == "append_text_file":
+            return self.append_text_file(**arguments)
         if name == "replace_in_file":
             return self.replace_in_file(**arguments)
         if name == "fetch_web":
@@ -1159,6 +1177,39 @@ class LocalToolExecutor:
             }
         except Exception as exc:
             return {"ok": False, "error": f"write_text_file failed: {exc}"}
+
+    def append_text_file(
+        self,
+        path: str,
+        content: str,
+        create_if_missing: bool = True,
+        create_dirs: bool = True,
+    ) -> dict[str, Any]:
+        try:
+            real_path = _resolve_workspace_path(self.config, path)
+            if real_path.exists() and real_path.is_dir():
+                return {"ok": False, "error": f"Path is a directory, not a file: {path}"}
+            if not real_path.exists() and not create_if_missing:
+                return {"ok": False, "error": f"File not found and create_if_missing=false: {path}"}
+
+            if not real_path.parent.exists():
+                if not create_dirs:
+                    return {"ok": False, "error": f"Parent directory not found: {real_path.parent}"}
+                real_path.parent.mkdir(parents=True, exist_ok=True)
+
+            created = not real_path.exists()
+            with real_path.open("a", encoding="utf-8") as fp:
+                fp.write(content)
+            return {
+                "ok": True,
+                "path": str(real_path),
+                "action": "create" if created else "append",
+                "chars_appended": len(content),
+                "bytes_appended_utf8": len(content.encode("utf-8")),
+                "bytes_total_utf8": real_path.stat().st_size,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"append_text_file failed: {exc}"}
 
     def replace_in_file(
         self,
