@@ -421,7 +421,6 @@ class OfficeAgent:
             if not settings.enable_tools or not tool_calls:
                 if (
                     settings.enable_tools
-                    and attachment_metas
                     and auto_nudge_budget > 0
                     and self._looks_like_permission_gate(ai_msg)
                 ):
@@ -436,9 +435,10 @@ class OfficeAgent:
                     messages.append(
                         self._SystemMessage(
                             content=(
-                                "不要询问用户是否继续读取或是否授权。"
+                                "不要询问用户是否继续读取、是否继续写入、是否授权或是否确认。"
                                 "用户当前请求已授权你直接继续执行。"
-                                "请立即调用必要工具（优先 read_text_file）并给出结果。"
+                                "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），"
+                                "并直接返回最终结果。"
                             )
                         )
                     )
@@ -1324,15 +1324,36 @@ class OfficeAgent:
             "继续读吗",
             "怕太大",
             "太大",
+            "最终确认",
+            "确认句",
+            "无需你回答",
+            "不执行写入",
+            "触发工具调用",
+            "必须包含路径",
             "need your confirmation",
             "do you want me to continue",
             "should i continue",
             "please provide instructions",
+            "write_text_file",
+            "append_text_file",
         )
         if not any(p in text for p in patterns):
             return False
         # Heuristic: avoid over-triggering on normal questions by requiring mention of files/reading.
-        file_hints = ("文件", "读取", "read_text_file", "chunk", "附件", "文档", "path")
+        file_hints = (
+            "文件",
+            "读取",
+            "写入",
+            "生成",
+            "保存",
+            "read_text_file",
+            "write_text_file",
+            "append_text_file",
+            "chunk",
+            "附件",
+            "文档",
+            "path",
+        )
         return any(h in text for h in file_hints)
 
     def _summarize_message_roles(self, messages: list[Any]) -> str:
