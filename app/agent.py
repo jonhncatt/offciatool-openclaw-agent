@@ -224,6 +224,7 @@ class OfficeAgent:
         user_message: str,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
+        session_id: str | None = None,
         progress_cb: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[str, list[ToolEvent], str, list[str], list[str], list[dict[str, Any]], dict[str, int], str]:
         requested_model = settings.model or self.config.default_model
@@ -242,6 +243,10 @@ class OfficeAgent:
 
         debug_raw = bool(getattr(settings, "debug_raw", False))
         debug_limit = 120000 if debug_raw else 3200
+        requested_execution_mode = str(getattr(settings, "execution_mode", "") or self.config.execution_mode).strip().lower()
+        if requested_execution_mode not in {"host", "docker"}:
+            requested_execution_mode = self.config.execution_mode
+        self.tools.set_runtime_context(execution_mode=requested_execution_mode, session_id=session_id)
 
         def emit_progress(event: str, **payload: Any) -> None:
             if not progress_cb:
@@ -314,6 +319,7 @@ class OfficeAgent:
             )
         ]
         add_trace(f"工具开关: {'开启' if settings.enable_tools else '关闭'}。")
+        add_trace(f"执行环境: {requested_execution_mode}。")
         add_trace(f"可访问根目录: {allowed_roots_text}")
 
         if summary.strip():

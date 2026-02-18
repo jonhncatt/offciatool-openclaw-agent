@@ -7,6 +7,7 @@ import shlex
 import shutil
 import ssl
 import subprocess
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import AppConfig
+from app.sandbox import DockerSandboxManager
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -535,6 +537,44 @@ def _guess_filename_from_response(url: str, content_type: str, content_dispositi
 class LocalToolExecutor:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
+        self._runtime_ctx = threading.local()
+        self._docker_sandbox = DockerSandboxManager(
+            workspace_root=config.workspace_root,
+            allowed_roots=config.allowed_roots,
+            image=config.docker_image,
+            network=config.docker_network,
+            memory=config.docker_memory,
+            cpus=config.docker_cpus,
+            pids_limit=config.docker_pids_limit,
+            container_prefix=config.docker_container_prefix,
+        )
+
+    def set_runtime_context(self, *, execution_mode: str | None = None, session_id: str | None = None) -> None:
+        mode = (execution_mode or "").strip().lower()
+        if mode not in {"host", "docker"}:
+            mode = self.config.execution_mode
+        self._runtime_ctx.execution_mode = mode
+        sid = str(session_id or "").strip() or "__anon__"
+        self._runtime_ctx.session_id = sid
+
+    def clear_runtime_context(self) -> None:
+        for key in ("execution_mode", "session_id"):
+            try:
+                delattr(self._runtime_ctx, key)
+            except Exception:
+                pass
+
+    def _current_execution_mode(self) -> str:
+        mode = str(getattr(self._runtime_ctx, "execution_mode", "") or "").strip().lower()
+        if mode in {"host", "docker"}:
+            return mode
+        return self.config.execution_mode
+
+    def _current_session_id(self) -> str:
+        return str(getattr(self._runtime_ctx, "session_id", "") or "__anon__")
+
+    def docker_available(self) -> bool:
+        return self._docker_sandbox.docker_available()
 
     @property
     def tool_specs(self) -> list[dict[str, Any]]:
@@ -821,15 +861,27 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+        timeout_val = max(1, min(30, timeout_sec))
+        execution_mode = self._current_execution_mode()
+        session_id = self._current_session_id()
+
         try:
-            proc = subprocess.run(
-                argv,
-                cwd=str(real_cwd),
-                capture_output=True,
-                text=True,
-                timeout=max(1, min(30, timeout_sec)),
-                check=False,
-            )
+            if execution_mode == "docker":
+                proc = self._docker_sandbox.run_in_sandbox(
+                    session_id=session_id,
+                    argv=argv,
+                    cwd=real_cwd,
+                    timeout_sec=timeout_val,
+                )
+            else:
+                proc = subprocess.run(
+                    argv,
+                    cwd=str(real_cwd),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_val,
+                    check=False,
+                )
             return {
                 "ok": proc.returncode == 0,
                 "returncode": proc.returncode,
@@ -837,6 +889,7 @@ class LocalToolExecutor:
                 "stderr": _truncate_output(proc.stderr),
                 "cwd": str(real_cwd),
                 "command": command,
+                "execution_mode": execution_mode,
             }
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"Command timed out after {timeout_sec}s"}

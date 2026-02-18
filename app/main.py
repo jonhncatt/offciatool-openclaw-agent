@@ -143,7 +143,13 @@ def index() -> FileResponse:
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    return HealthResponse(ok=True, model_default=config.default_model)
+    agent = get_agent()
+    return HealthResponse(
+        ok=True,
+        model_default=config.default_model,
+        execution_mode_default=config.execution_mode,
+        docker_available=agent.tools.docker_available(),
+    )
 
 
 @app.post("/api/session/new", response_model=NewSessionResponse)
@@ -320,6 +326,7 @@ def _process_chat_request(
             user_message=req.message,
             attachment_metas=attachments,
             settings=req.settings,
+            session_id=session_id,
             progress_cb=progress_cb,
         )
         _emit_progress(progress_cb, "stage", code="agent_run_done", detail="模型推理结束，开始写入会话与统计。", run_id=run_id)

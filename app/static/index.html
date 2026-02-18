@@ -19,6 +19,15 @@
           <input id="modelInput" type="text" placeholder="gpt-5.1-chat" />
         </label>
 
+        <label>执行环境
+          <select id="execModeInput">
+            <option value="">默认（后端配置）</option>
+            <option value="host">Host（本机）</option>
+            <option value="docker">Docker（沙盒）</option>
+          </select>
+          <span class="field-hint">只影响本次请求的命令执行环境；默认跟随后端 OFFICETOOL_EXECUTION_MODE。</span>
+        </label>
+
         <div class="preset-row">
           <button id="presetGeneralBtn" type="button" class="secondary">通用模式</button>
           <button id="presetCodingBtn" type="button" class="secondary">编码模式</button>

@@ -10,6 +10,7 @@ class ChatSettings(BaseModel):
     max_output_tokens: int = Field(default=128000, ge=120, le=128000)
     max_context_turns: int = Field(default=2000, ge=2, le=2000)
     enable_tools: bool = True
+    execution_mode: Literal["host", "docker"] | None = None
     debug_raw: bool = False
     response_style: Literal["short", "normal", "long"] = "normal"
 
@@ -118,6 +119,8 @@ class SessionListResponse(BaseModel):
 class HealthResponse(BaseModel):
     ok: bool
     model_default: str
+    execution_mode_default: Literal["host", "docker"] = "host"
+    docker_available: bool = False
 
 
 class TokenStatsResponse(BaseModel):

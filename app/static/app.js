@@ -21,6 +21,7 @@ const tokenStatsView = document.getElementById("tokenStatsView");
 const clearStatsBtn = document.getElementById("clearStatsBtn");
 
 const modelInput = document.getElementById("modelInput");
+const execModeInput = document.getElementById("execModeInput");
 const tokenInput = document.getElementById("tokenInput");
 const ctxInput = document.getElementById("ctxInput");
 const styleInput = document.getElementById("styleInput");
@@ -587,6 +588,7 @@ function renderRunPayload(body, attachmentNames) {
     `max_output_tokens: ${settings.max_output_tokens}`,
     `max_context_turns: ${settings.max_context_turns}`,
     `enable_tools: ${settings.enable_tools}`,
+    `execution_mode: ${settings.execution_mode || "(backend default)"}`,
     `debug_raw: ${settings.debug_raw}`,
     `response_style: ${settings.response_style}`,
     "",
@@ -755,11 +757,13 @@ async function handleFiles(files) {
 }
 
 function getSettings() {
+  const mode = String(execModeInput?.value || "").trim().toLowerCase();
   return {
     model: modelInput.value.trim() || null,
     max_output_tokens: Number(tokenInput.value || 128000),
     max_context_turns: Number(ctxInput.value || 2000),
     enable_tools: toolInput.checked,
+    execution_mode: mode === "host" || mode === "docker" ? mode : null,
     debug_raw: Boolean(rawDebugInput?.checked),
     response_style: styleInput.value,
   };
@@ -1058,10 +1062,25 @@ if (deleteSessionBtn) {
     if (!modelInput.value) {
       modelInput.value = health.model_default || MODE_PRESETS.general.model;
     }
+    const backendExecMode = String(health.execution_mode_default || "host").toLowerCase();
+    if (execModeInput) {
+      execModeInput.value = "";
+      const dockerOption = execModeInput.querySelector('option[value="docker"]');
+      if (dockerOption) {
+        const dockerReady = Boolean(health.docker_available);
+        dockerOption.disabled = !dockerReady;
+        dockerOption.textContent = dockerReady ? "Docker（沙盒）" : "Docker（未就绪）";
+      }
+      execModeInput.title = `后端默认执行环境: ${backendExecMode}`;
+    }
     await refreshSessionHistory();
     const restored = await restoreSessionIfPossible();
     if (!restored) {
-      addBubble("system", `服务已启动，默认模型：${health.model_default}`);
+      const dockerTip = health.docker_available ? "Docker 可用" : "Docker 未就绪";
+      addBubble(
+        "system",
+        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。`
+      );
     }
     await refreshTokenStatsFromServer();
   } catch {

@@ -193,6 +193,7 @@ cd $HOME\Desktop\officetool
 - `最大输出 tokens`：单次回复的 token 上限。默认 `128000`（网关若有限制会报错）。
 - `上下文消息条数`：每次请求带入最近多少条历史消息。默认 `2000`，页面最高可设置到 `2000`。
 - `回答长度`：输出风格开关（短/中/长），用于控制回答详细程度，不等于固定 token 数。
+- `执行环境`：`Host（本机）` 或 `Docker（沙盒）`。默认跟随后端 `OFFICETOOL_EXECUTION_MODE`；也可在页面按请求覆盖。
 - `Token 统计`：
   - 输入 tokens = 你发给模型的内容（system + history + 当前问题 + 工具结果等）
   - 输出 tokens = 模型回给你的内容
@@ -210,8 +211,11 @@ cd $HOME\Desktop\officetool
 - 温度默认不强制传参；如需指定可设置 `OFFICETOOL_TEMPERATURE`（例如 `0` 或 `1`）
 - 如网页抓取报 `CERTIFICATE_VERIFY_FAILED`（如 basic constraints not marked critical），请设置：`OFFICETOOL_WEB_SKIP_TLS_VERIFY=true`
 - 会话并发队列参数：`OFFICETOOL_MAX_CONCURRENT_RUNS`、`OFFICETOOL_RUN_QUEUE_WAIT_NOTICE_MS`
+- 执行环境参数（`run_shell`）：`OFFICETOOL_EXECUTION_MODE`（`host`/`docker`）、`OFFICETOOL_DOCKER_IMAGE`、`OFFICETOOL_DOCKER_NETWORK`、`OFFICETOOL_DOCKER_MEMORY`、`OFFICETOOL_DOCKER_CPUS`、`OFFICETOOL_DOCKER_PIDS_LIMIT`、`OFFICETOOL_DOCKER_CONTAINER_PREFIX`
 - 工具上下文裁剪参数：`OFFICETOOL_TOOL_RESULT_SOFT_TRIM_CHARS`、`OFFICETOOL_TOOL_RESULT_HARD_CLEAR_CHARS`、`OFFICETOOL_TOOL_RESULT_HEAD_CHARS`、`OFFICETOOL_TOOL_RESULT_TAIL_CHARS`、`OFFICETOOL_TOOL_CONTEXT_PRUNE_KEEP_LAST`
 - 模型价格来源：OpenAI 官方定价页（[openai.com/api/pricing](https://openai.com/api/pricing/)），当前内置表按 2026-02-12 的公开价格写入 `app/pricing.py`
+
+> 注意：Docker 模式需要本机已安装并启动 Docker Desktop；当前先作用于 `run_shell` 命令执行链路。
 
 ## 3. 目录结构
 
@@ -221,6 +225,7 @@ app/
   attachments.py   # 文档抽取、图片读取
   config.py        # 配置项
   local_tools.py   # 本地工具执行安全层
+  sandbox.py       # Docker 沙盒执行管理（会话级容器）
   main.py          # FastAPI 路由
   models.py        # API 数据模型
   storage.py       # 会话与上传持久化

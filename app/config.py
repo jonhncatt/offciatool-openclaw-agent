@@ -109,6 +109,13 @@ class AppConfig:
     tool_context_prune_keep_last: int
     max_concurrent_runs: int
     run_queue_wait_notice_ms: int
+    execution_mode: str
+    docker_image: str
+    docker_network: str
+    docker_memory: str
+    docker_cpus: str
+    docker_pids_limit: int
+    docker_container_prefix: str
     enable_session_tools: bool
     allowed_commands: list[str]
 
@@ -316,6 +323,31 @@ def load_config() -> AppConfig:
             or "1500"
         ).strip()
     )
+    execution_mode = (
+        _env("OFFICETOOL_EXECUTION_MODE", "OFFCIATOOL_EXECUTION_MODE", default="host") or "host"
+    ).strip().lower()
+    if execution_mode not in {"host", "docker"}:
+        execution_mode = "host"
+    docker_image = (
+        _env("OFFICETOOL_DOCKER_IMAGE", "OFFCIATOOL_DOCKER_IMAGE", default="python:3.11-slim")
+        or "python:3.11-slim"
+    ).strip()
+    docker_network = (
+        _env("OFFICETOOL_DOCKER_NETWORK", "OFFCIATOOL_DOCKER_NETWORK", default="none") or "none"
+    ).strip()
+    docker_memory = (
+        _env("OFFICETOOL_DOCKER_MEMORY", "OFFCIATOOL_DOCKER_MEMORY", default="2g") or "2g"
+    ).strip()
+    docker_cpus = (
+        _env("OFFICETOOL_DOCKER_CPUS", "OFFCIATOOL_DOCKER_CPUS", default="1.0") or "1.0"
+    ).strip()
+    docker_pids_limit = int(
+        (_env("OFFICETOOL_DOCKER_PIDS_LIMIT", "OFFCIATOOL_DOCKER_PIDS_LIMIT", default="256") or "256").strip()
+    )
+    docker_container_prefix = (
+        _env("OFFICETOOL_DOCKER_CONTAINER_PREFIX", "OFFCIATOOL_DOCKER_CONTAINER_PREFIX", default="officetool-sbx")
+        or "officetool-sbx"
+    ).strip()
     enable_session_tools_raw = (
         _env("OFFICETOOL_ENABLE_SESSION_TOOLS", "OFFCIATOOL_ENABLE_SESSION_TOOLS", default="true") or "true"
     ).strip().lower()
@@ -394,6 +426,13 @@ def load_config() -> AppConfig:
         tool_context_prune_keep_last=max(0, min(20, tool_context_prune_keep_last)),
         max_concurrent_runs=max(1, min(32, max_concurrent_runs)),
         run_queue_wait_notice_ms=max(0, min(120_000, run_queue_wait_notice_ms)),
+        execution_mode=execution_mode,
+        docker_image=docker_image or "python:3.11-slim",
+        docker_network=docker_network or "none",
+        docker_memory=docker_memory or "2g",
+        docker_cpus=docker_cpus or "1.0",
+        docker_pids_limit=max(16, min(4096, docker_pids_limit)),
+        docker_container_prefix=docker_container_prefix or "officetool-sbx",
         enable_session_tools=enable_session_tools,
         allowed_commands=_split_csv(allowed_commands_raw),
     )
