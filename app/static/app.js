@@ -1,7 +1,7 @@
 const state = {
   sessionId: null,
   uploading: false,
-  sending: false,
+  sendingSessionIds: new Set(),
   attachments: [],
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
@@ -171,6 +171,23 @@ function formatNumberedLines(title, items) {
   return `${title}\n${lines.join("\n")}`;
 }
 
+function currentSessionKey() {
+  return String(state.sessionId || "").trim();
+}
+
+function isSessionSending(sessionId) {
+  const key = String(sessionId || "").trim();
+  if (!key) return false;
+  return state.sendingSessionIds.has(key);
+}
+
+function updateSendAvailability() {
+  if (!sendBtn) return;
+  const sid = currentSessionKey();
+  const disabled = Boolean(state.uploading || (sid && isSessionSending(sid)));
+  sendBtn.disabled = disabled;
+}
+
 function refreshSession() {
   sessionIdView.textContent = state.sessionId || "(未创建)";
   if (deleteSessionBtn) {
@@ -183,6 +200,7 @@ function refreshSession() {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
     }
   } catch {}
+  updateSendAvailability();
 }
 
 function getStoredSessionId() {
@@ -716,7 +734,7 @@ async function handleFiles(files) {
   if (!files || !files.length) return;
 
   state.uploading = true;
-  sendBtn.disabled = true;
+  updateSendAvailability();
   addBubble("system", `正在上传 ${files.length} 个文件...`);
 
   try {
@@ -731,7 +749,7 @@ async function handleFiles(files) {
     addBubble("system", String(err));
   } finally {
     state.uploading = false;
-    sendBtn.disabled = false;
+    updateSendAvailability();
     fileInput.value = "";
   }
 }
@@ -749,14 +767,32 @@ function getSettings() {
 
 async function sendMessage() {
   const message = messageInput.value.trim();
-  if (!message || state.sending) return;
+  if (!message) return;
+  let requestSessionId = currentSessionKey();
+  if (requestSessionId && isSessionSending(requestSessionId)) return;
   let stopWaitTicker = null;
+  const isForegroundSession = () => currentSessionKey() === requestSessionId;
 
   setRunStage("进行中", "正在准备本轮请求参数", "prepare", "working");
 
-  if (!state.sessionId) {
-    setRunStage("进行中", "正在创建新会话", "prepare", "working");
-    await createSession();
+  if (!requestSessionId) {
+    try {
+      setRunStage("进行中", "正在创建新会话", "prepare", "working");
+      await createSession();
+    } catch (err) {
+      setRunStage("失败", "创建会话失败，请检查错误信息", "prepare", "error");
+      addBubble("system", `创建会话失败: ${String(err)}`);
+      return;
+    }
+    requestSessionId = currentSessionKey();
+  }
+  if (!requestSessionId) {
+    setRunStage("失败", "创建会话失败，请重试", "prepare", "error");
+    addBubble("system", "创建会话失败，请重试。");
+    return;
+  }
+  if (isSessionSending(requestSessionId)) {
+    return;
   }
 
   addBubble("user", message);
@@ -765,12 +801,12 @@ async function sendMessage() {
     addBubble("system", `本轮将携带 ${state.attachments.length} 个附件：${names}`);
   }
   messageInput.value = "";
-  sendBtn.disabled = true;
-  state.sending = true;
+  state.sendingSessionIds.add(requestSessionId);
+  updateSendAvailability();
 
   try {
     const body = {
-      session_id: state.sessionId,
+      session_id: requestSessionId,
       message,
       attachment_ids: state.attachments.map((x) => x.id),
       settings: getSettings(),
@@ -800,6 +836,7 @@ async function sendMessage() {
     stopWaitTicker = startWaitStageTicker(totalAttachmentBytes);
     const data = await streamChatRequest(body, {
       onStage: (payload) => {
+        if (!isForegroundSession()) return;
         const code = String(payload?.code || "");
         if (
           typeof stopWaitTicker === "function" &&
@@ -811,24 +848,28 @@ async function sendMessage() {
         applyBackendStage(payload);
       },
       onTrace: (payload) => {
+        if (!isForegroundSession()) return;
         const line = String(payload?.message || "").trim();
         if (!line) return;
         liveTrace.push(line);
         renderRunTrace(liveTrace, liveToolEvents);
       },
       onDebug: (payload) => {
+        if (!isForegroundSession()) return;
         const item = payload?.item;
         if (!item || typeof item !== "object") return;
         liveFlow.push(item);
         renderLlmFlow(liveFlow);
       },
       onToolEvent: (payload) => {
+        if (!isForegroundSession()) return;
         const item = payload?.item;
         if (!item || typeof item !== "object") return;
         liveToolEvents.push(item);
         renderRunTrace(liveTrace, liveToolEvents);
       },
       onHeartbeat: () => {
+        if (!isForegroundSession()) return;
         heartbeatCount += 1;
         if (heartbeatCount === 1 || heartbeatCount % 3 === 0) {
           liveTrace.push(
@@ -847,66 +888,72 @@ async function sendMessage() {
       throw new Error("流式响应异常：未收到最终结果。");
     }
 
-    state.sessionId = data.session_id;
-    refreshSession();
-    const selectedModel = String(body?.settings?.model || "").trim();
-    const effectiveModel = String(data?.effective_model || "").trim();
-    const queueWaitMs = Number(data?.queue_wait_ms || 0);
-    if (effectiveModel && (!selectedModel || selectedModel !== effectiveModel)) {
-      addBubble("system", `本轮模型自动切换：${selectedModel || "(默认)"} -> ${effectiveModel}`);
-    }
-    if (queueWaitMs >= 1000) {
-      addBubble("system", `本轮排队等待 ${queueWaitMs} ms 后开始执行。`);
-    }
+    const responseSessionId = String(data.session_id || requestSessionId);
+    if (isForegroundSession()) {
+      state.sessionId = responseSessionId;
+      refreshSession();
+      const selectedModel = String(body?.settings?.model || "").trim();
+      const effectiveModel = String(data?.effective_model || "").trim();
+      const queueWaitMs = Number(data?.queue_wait_ms || 0);
+      if (effectiveModel && (!selectedModel || selectedModel !== effectiveModel)) {
+        addBubble("system", `本轮模型自动切换：${selectedModel || "(默认)"} -> ${effectiveModel}`);
+      }
+      if (queueWaitMs >= 1000) {
+        addBubble("system", `本轮排队等待 ${queueWaitMs} ms 后开始执行。`);
+      }
 
-    if (data.summarized) {
-      addBubble("system", "历史上下文已自动压缩摘要，避免窗口过长。", null);
-    }
-    if (Array.isArray(data.missing_attachment_ids) && data.missing_attachment_ids.length) {
-      addBubble(
-        "system",
-        `有 ${data.missing_attachment_ids.length} 个附件未找到，请重新上传后重试。\nIDs: ${data.missing_attachment_ids.join(", ")}`,
-        null
-      );
-      const missing = new Set(data.missing_attachment_ids);
-      state.attachments = state.attachments.filter((x) => !missing.has(x.id));
-      refreshFileList();
-    }
+      if (data.summarized) {
+        addBubble("system", "历史上下文已自动压缩摘要，避免窗口过长。", null);
+      }
+      if (Array.isArray(data.missing_attachment_ids) && data.missing_attachment_ids.length) {
+        addBubble(
+          "system",
+          `有 ${data.missing_attachment_ids.length} 个附件未找到，请重新上传后重试。\nIDs: ${data.missing_attachment_ids.join(", ")}`,
+          null
+        );
+        const missing = new Set(data.missing_attachment_ids);
+        state.attachments = state.attachments.filter((x) => !missing.has(x.id));
+        refreshFileList();
+      }
 
-    renderRunTrace(data.execution_trace || [], data.tool_events || []);
-    renderLlmFlow(data.debug_flow || []);
-
-    addBubble("assistant", data.text);
+      renderRunTrace(data.execution_trace || [], data.tool_events || []);
+      renderLlmFlow(data.debug_flow || []);
+      addBubble("assistant", data.text);
+    }
     await refreshSessionHistory();
-    renderTokenStats({
-      last: data.token_usage || {},
-      session: data.session_token_totals || {},
-      global: data.global_token_totals || {},
-    });
-    setRunStage("完成", "本轮已完成", "done", "done");
+    if (isForegroundSession()) {
+      renderTokenStats({
+        last: data.token_usage || {},
+        session: data.session_token_totals || {},
+        global: data.global_token_totals || {},
+      });
+      setRunStage("完成", "本轮已完成", "done", "done");
+    }
   } catch (err) {
     if (typeof stopWaitTicker === "function") {
       stopWaitTicker();
       stopWaitTicker = null;
     }
-    renderRunTrace([`请求失败: ${String(err)}`], []);
-    renderLlmFlow([
-      {
-        step: 1,
-        stage: "frontend_error",
-        title: "前端请求失败",
-        detail: String(err),
-      },
-    ]);
-    setRunStage("失败", "请求失败，请检查错误信息", "parse", "error");
-    addBubble("system", `请求失败: ${String(err)}`);
+    if (isForegroundSession()) {
+      renderRunTrace([`请求失败: ${String(err)}`], []);
+      renderLlmFlow([
+        {
+          step: 1,
+          stage: "frontend_error",
+          title: "前端请求失败",
+          detail: String(err),
+        },
+      ]);
+      setRunStage("失败", "请求失败，请检查错误信息", "parse", "error");
+      addBubble("system", `请求失败: ${String(err)}`);
+    }
   } finally {
     if (typeof stopWaitTicker === "function") {
       stopWaitTicker();
       stopWaitTicker = null;
     }
-    state.sending = false;
-    sendBtn.disabled = false;
+    state.sendingSessionIds.delete(requestSessionId);
+    updateSendAvailability();
   }
 }
 
