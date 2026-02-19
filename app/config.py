@@ -110,6 +110,7 @@ class AppConfig:
     max_concurrent_runs: int
     run_queue_wait_notice_ms: int
     execution_mode: str
+    docker_bin: str
     docker_image: str
     docker_network: str
     docker_memory: str
@@ -328,6 +329,9 @@ def load_config() -> AppConfig:
     ).strip().lower()
     if execution_mode not in {"host", "docker"}:
         execution_mode = "host"
+    docker_bin = (
+        _env("OFFICETOOL_DOCKER_BIN", "OFFCIATOOL_DOCKER_BIN", default="docker") or "docker"
+    ).strip()
     docker_image = (
         _env("OFFICETOOL_DOCKER_IMAGE", "OFFCIATOOL_DOCKER_IMAGE", default="python:3.11-slim")
         or "python:3.11-slim"
@@ -427,6 +431,7 @@ def load_config() -> AppConfig:
         max_concurrent_runs=max(1, min(32, max_concurrent_runs)),
         run_queue_wait_notice_ms=max(0, min(120_000, run_queue_wait_notice_ms)),
         execution_mode=execution_mode,
+        docker_bin=docker_bin or "docker",
         docker_image=docker_image or "python:3.11-slim",
         docker_network=docker_network or "none",
         docker_memory=docker_memory or "2g",

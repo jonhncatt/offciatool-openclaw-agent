@@ -121,6 +121,7 @@ class HealthResponse(BaseModel):
     model_default: str
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False
+    docker_message: str | None = None
 
 
 class TokenStatsResponse(BaseModel):

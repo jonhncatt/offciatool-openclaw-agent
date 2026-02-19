@@ -541,6 +541,7 @@ class LocalToolExecutor:
         self._docker_sandbox = DockerSandboxManager(
             workspace_root=config.workspace_root,
             allowed_roots=config.allowed_roots,
+            docker_bin=config.docker_bin,
             image=config.docker_image,
             network=config.docker_network,
             memory=config.docker_memory,
@@ -575,6 +576,10 @@ class LocalToolExecutor:
 
     def docker_available(self) -> bool:
         return self._docker_sandbox.docker_available()
+
+    def docker_status(self) -> tuple[bool, str]:
+        ok = self._docker_sandbox.docker_available()
+        return ok, self._docker_sandbox.docker_status_message()
 
     @property
     def tool_specs(self) -> list[dict[str, Any]]:
@@ -869,17 +874,25 @@ class LocalToolExecutor:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-        timeout_val = max(1, min(30, timeout_sec))
+        timeout_val = max(1, min(120, timeout_sec))
         execution_mode = self._current_execution_mode()
         session_id = self._current_session_id()
 
         try:
+            sandbox_cwd = None
+            mounts: list[dict[str, str]] = []
             if execution_mode == "docker":
+                try:
+                    sandbox_cwd = self._docker_sandbox.container_path_for_host(real_cwd)
+                except Exception:
+                    sandbox_cwd = None
+                mounts = self._docker_sandbox.mount_mappings()
                 proc = self._docker_sandbox.run_in_sandbox(
                     session_id=session_id,
                     argv=argv,
                     cwd=real_cwd,
                     timeout_sec=timeout_val,
+                    container_cwd=sandbox_cwd,
                 )
             else:
                 proc = subprocess.run(
@@ -890,15 +903,24 @@ class LocalToolExecutor:
                     timeout=timeout_val,
                     check=False,
                 )
-            return {
+            payload: dict[str, Any] = {
                 "ok": proc.returncode == 0,
                 "returncode": proc.returncode,
                 "stdout": _truncate_output(proc.stdout),
                 "stderr": _truncate_output(proc.stderr),
                 "cwd": str(real_cwd),
+                "host_cwd": str(real_cwd),
                 "command": " ".join(shlex.quote(x) for x in argv),
                 "execution_mode": execution_mode,
             }
+            if execution_mode == "docker":
+                payload["sandbox_cwd"] = sandbox_cwd or ""
+                payload["mount_mappings"] = mounts
+                payload["path_mapping_hint"] = (
+                    "Files in sandbox_cwd are persisted to host_cwd via Docker bind mounts. "
+                    "Always report host_cwd/host absolute paths to user."
+                )
+            return payload
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"Command timed out after {timeout_val}s"}
         except Exception as exc:

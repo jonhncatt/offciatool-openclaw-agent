@@ -1074,6 +1074,7 @@ if (deleteSessionBtn) {
       modelInput.value = health.model_default || MODE_PRESETS.general.model;
     }
     const backendExecMode = String(health.execution_mode_default || "host").toLowerCase();
+    const dockerMsg = String(health.docker_message || "").trim();
     if (execModeInput) {
       execModeInput.value = "";
       const dockerOption = execModeInput.querySelector('option[value="docker"]');
@@ -1081,6 +1082,7 @@ if (deleteSessionBtn) {
         const dockerReady = Boolean(health.docker_available);
         dockerOption.disabled = !dockerReady;
         dockerOption.textContent = dockerReady ? "Docker（沙盒）" : "Docker（未就绪）";
+        dockerOption.title = dockerMsg || (dockerReady ? "Docker is available" : "Docker is not available");
       }
       execModeInput.title = `后端默认执行环境: ${backendExecMode}`;
     }
@@ -1090,7 +1092,7 @@ if (deleteSessionBtn) {
       const dockerTip = health.docker_available ? "Docker 可用" : "Docker 未就绪";
       addBubble(
         "system",
-        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。`
+        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
       );
     }
     await refreshTokenStatsFromServer();

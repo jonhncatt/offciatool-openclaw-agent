@@ -144,11 +144,13 @@ def index() -> FileResponse:
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     agent = get_agent()
+    docker_ok, docker_msg = agent.tools.docker_status()
     return HealthResponse(
         ok=True,
         model_default=config.default_model,
         execution_mode_default=config.execution_mode,
-        docker_available=agent.tools.docker_available(),
+        docker_available=docker_ok,
+        docker_message=docker_msg,
     )
 
 
