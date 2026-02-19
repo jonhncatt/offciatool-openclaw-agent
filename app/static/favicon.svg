@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="openclaw agent icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9e0ff" />
+      <stop offset="1" stop-color="#c9b7ff" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)" />
+  <path d="M20 34c0-6.8 5.4-12 12-12s12 5.2 12 12-5.4 12-12 12-12-5.2-12-12zm7.5 0c0 2.6 1.9 4.8 4.5 4.8s4.5-2.2 4.5-4.8-1.9-4.8-4.5-4.8-4.5 2.2-4.5 4.8z" fill="#4b2f8f" />
+  <path d="M47 41l-2.5-6.5L42 41h-7l7-18h5l7 18h-7z" fill="#4b2f8f" />
+</svg>
