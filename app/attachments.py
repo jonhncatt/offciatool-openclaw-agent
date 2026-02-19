@@ -6,6 +6,10 @@ import re
 from html import unescape
 from pathlib import Path
 
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_MSG_MARKERS_ASCII = (b"__substg1.0_", b"IPM.")
+_MSG_MARKERS_UTF16 = tuple(marker.decode("ascii").encode("utf-16-le") for marker in _MSG_MARKERS_ASCII)
+
 
 def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
@@ -55,6 +59,139 @@ def _html_to_text(html: str) -> str:
     return "\n".join(lines)
 
 
+def _decode_bytes_best_effort(raw: bytes) -> str:
+    if not raw:
+        return ""
+    for encoding in ("utf-8", "utf-16-le", "utf-16-be", "latin-1"):
+        try:
+            out = raw.decode(encoding, errors="ignore")
+        except Exception:
+            continue
+        if out.strip():
+            return out
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _looks_binaryish_text(text: str) -> bool:
+    if not text:
+        return False
+    sample = text[:4096]
+    if not sample:
+        return False
+
+    bad = 0
+    for ch in sample:
+        code = ord(ch)
+        if code == 0:
+            bad += 3
+        elif code < 32 and ch not in "\n\r\t":
+            bad += 1
+
+    ratio = bad / max(1, len(sample))
+    return ratio >= 0.02
+
+
+def looks_like_outlook_msg_bytes(raw: bytes) -> bool:
+    if not raw or not raw.startswith(_OLE2_MAGIC):
+        return False
+    head = raw[: max(4096, min(len(raw), 512 * 1024))]
+    if any(marker in head for marker in _MSG_MARKERS_ASCII):
+        return True
+    if any(marker in head for marker in _MSG_MARKERS_UTF16):
+        return True
+    return False
+
+
+def looks_like_outlook_msg_file(path: Path) -> bool:
+    try:
+        with path.open("rb") as fp:
+            head = fp.read(512 * 1024)
+    except Exception:
+        return False
+    return looks_like_outlook_msg_bytes(head)
+
+
+def _extract_msg_body(msg: object) -> str:
+    body = ""
+    try:
+        plain = getattr(msg, "body", None)
+        if isinstance(plain, str):
+            body = plain.strip()
+        elif isinstance(plain, (bytes, bytearray)):
+            body = _decode_bytes_best_effort(bytes(plain)).strip()
+    except Exception:
+        body = ""
+    if body and not _looks_binaryish_text(body):
+        return body
+
+    try:
+        html_body = getattr(msg, "htmlBody", None)
+        if isinstance(html_body, (bytes, bytearray)):
+            html_body = _decode_bytes_best_effort(bytes(html_body))
+        if isinstance(html_body, str) and html_body.strip():
+            html_text = _html_to_text(html_body).strip()
+            if html_text and not _looks_binaryish_text(html_text):
+                return html_text
+    except Exception:
+        pass
+
+    try:
+        rtf_body = getattr(msg, "rtfBody", None)
+        deencap = getattr(msg, "deencapsulateBody", None)
+        if rtf_body and callable(deencap):
+            try:
+                from extract_msg.enums import DeencapType  # lazy import
+
+                plain_rtf = deencap(rtf_body, DeencapType.PLAIN)
+            except Exception:
+                plain_rtf = None
+            if isinstance(plain_rtf, (bytes, bytearray)):
+                plain_rtf = _decode_bytes_best_effort(bytes(plain_rtf))
+            if isinstance(plain_rtf, str):
+                plain_rtf = plain_rtf.strip()
+                if plain_rtf and not _looks_binaryish_text(plain_rtf):
+                    return plain_rtf
+    except Exception:
+        pass
+
+    return ""
+
+
+def _format_msg_attachment_line(att: object, idx: int) -> str:
+    name = (
+        (getattr(att, "longFilename", None) or "")
+        or (getattr(att, "filename", None) or "")
+        or (getattr(att, "name", None) or "")
+        or f"attachment_{idx}"
+    )
+    extras: list[str] = []
+
+    att_type = str(getattr(att, "type", "") or "").strip()
+    if att_type:
+        extras.append(att_type.split(".")[-1].lower())
+
+    mime = (getattr(att, "mimetype", None) or "").strip()
+    if mime:
+        extras.append(mime)
+
+    data = None
+    try:
+        data = getattr(att, "data", None)
+    except Exception:
+        data = None
+
+    if isinstance(data, (bytes, bytearray)):
+        extras.append(f"{len(data)} bytes")
+    else:
+        nested_subject = (getattr(data, "subject", None) or "").strip() if data is not None else ""
+        if nested_subject:
+            extras.append(f"嵌套邮件: {nested_subject}")
+
+    if extras:
+        return f"- {name} ({', '.join(extras)})"
+    return f"- {name}"
+
+
 def _extract_outlook_msg(path: Path, max_chars: int) -> str:
     try:
         import extract_msg  # lazy import
@@ -63,38 +200,23 @@ def _extract_outlook_msg(path: Path, max_chars: int) -> str:
             "解析 .msg 需要依赖 extract-msg。请执行 `pip install -r requirements.txt` 后重试。"
         ) from exc
 
-    msg = extract_msg.Message(str(path))
+    msg = extract_msg.openMsg(str(path), strict=False, delayAttachments=False)
     try:
         subject = (msg.subject or "").strip()
         sender = (msg.sender or "").strip()
         to = (msg.to or "").strip()
         cc = (msg.cc or "").strip()
         date = str(msg.date or "").strip()
-
-        body = (msg.body or "").strip()
-        if not body:
-            html_body = msg.htmlBody
-            if isinstance(html_body, bytes):
-                html_body = html_body.decode("utf-8", errors="ignore")
-            if isinstance(html_body, str) and html_body.strip():
-                body = _html_to_text(html_body)
+        class_type = str(getattr(msg, "classType", "") or "").strip()
+        body = _extract_msg_body(msg)
 
         attachment_lines: list[str] = []
         for idx, att in enumerate(getattr(msg, "attachments", []) or [], start=1):
-            name = (
-                (getattr(att, "longFilename", None) or "")
-                or (getattr(att, "filename", None) or "")
-                or (getattr(att, "name", None) or "")
-                or f"attachment_{idx}"
-            )
-            data = getattr(att, "data", None)
-            size = len(data) if isinstance(data, (bytes, bytearray)) else None
-            if size is not None:
-                attachment_lines.append(f"- {name} ({size} bytes)")
-            else:
-                attachment_lines.append(f"- {name}")
+            attachment_lines.append(_format_msg_attachment_line(att, idx))
 
         sections: list[str] = ["[Outlook MSG 邮件解析]"]
+        if class_type:
+            sections.append(f"消息类型: {class_type}")
         if subject:
             sections.append(f"主题: {subject}")
         if sender:
@@ -111,6 +233,9 @@ def _extract_outlook_msg(path: Path, max_chars: int) -> str:
         if body:
             sections.append("\n--- 正文 ---\n")
             sections.append(body)
+        else:
+            sections.append("\n--- 正文 ---\n")
+            sections.append("[未提取到可读正文：该邮件可能仅包含附件、图片或受限富文本内容]")
 
         return _truncate("\n".join(sections).strip(), max_chars)
     finally:
@@ -150,7 +275,7 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
             return _extract_pdf(file_path, max_chars)
         if suffix == ".docx":
             return _extract_docx(file_path, max_chars)
-        if suffix == ".msg":
+        if suffix == ".msg" or looks_like_outlook_msg_file(file_path):
             return _extract_outlook_msg(file_path, max_chars)
     except Exception as exc:
         return f"[文档解析失败: {exc}]"

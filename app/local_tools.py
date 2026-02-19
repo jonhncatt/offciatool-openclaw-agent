@@ -1064,19 +1064,29 @@ class LocalToolExecutor:
                 elif suffix == ".msg":
                     source_format = "msg_text_extracted"
             else:
-                # Content sniffing: handle PDFs saved without .pdf suffix.
+                # Content sniffing: handle docs saved without normal suffix.
                 try:
-                    raw = real_path.read_bytes()
-                    head = raw[:8]
+                    with real_path.open("rb") as fp:
+                        sniff = fp.read(512 * 1024)
+                    head = sniff[:8]
                 except Exception:
-                    raw = b""
+                    sniff = b""
                     head = b""
                 if head.startswith(b"%PDF-"):
                     source_format = "pdf_text_extracted"
                     try:
+                        raw = real_path.read_bytes()
                         full_text = _extract_pdf_text_from_bytes(raw, max_chars=1_000_000)
                     except Exception as exc:
                         full_text = f"[文档解析失败: {exc}]"
+                elif head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+                    from app.attachments import extract_document_text, looks_like_outlook_msg_bytes  # lazy import
+
+                    if looks_like_outlook_msg_bytes(sniff):
+                        source_format = "msg_text_extracted"
+                        full_text = extract_document_text(str(real_path), max_chars=1_000_000) or ""
+                    else:
+                        full_text = real_path.read_text(encoding="utf-8", errors="ignore")
                 else:
                     full_text = real_path.read_text(encoding="utf-8", errors="ignore")
 
