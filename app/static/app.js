@@ -612,7 +612,18 @@ function renderRunTrace(traceItems = [], toolEvents = []) {
     lines.push("工具调用:");
     toolEvents.forEach((tool, idx) => {
       const args = tool?.input ? JSON.stringify(tool.input) : "{}";
-      lines.push(`${idx + 1}. ${tool?.name || "unknown"}(${args})`);
+      let modeSuffix = "";
+      try {
+        const raw = String(tool?.output_preview || "").trim();
+        if (raw.startsWith("{")) {
+          const parsed = JSON.parse(raw);
+          const mode = String(parsed?.execution_mode || "").trim().toLowerCase();
+          if (mode === "host" || mode === "docker") {
+            modeSuffix = ` [${mode}]`;
+          }
+        }
+      } catch {}
+      lines.push(`${idx + 1}. ${tool?.name || "unknown"}(${args})${modeSuffix}`);
     });
   }
 

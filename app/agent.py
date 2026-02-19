@@ -47,7 +47,7 @@ _FOLLOWUP_INLINE_MAX_BYTES = 256 * 1024
 class RunShellArgs(BaseModel):
     command: str = Field(description="Shell command, e.g. `ls -la` or `rg TODO .`")
     cwd: str = Field(default=".", description="Working directory relative to workspace")
-    timeout_sec: int = Field(default=15, ge=1, le=30)
+    timeout_sec: int = Field(default=15, ge=1, le=120)
 
 
 class ListDirectoryArgs(BaseModel):

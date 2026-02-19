@@ -588,7 +588,7 @@ class LocalToolExecutor:
                     "properties": {
                         "command": {"type": "string", "description": "Shell command, e.g. `ls -la` or `rg TODO .`"},
                         "cwd": {"type": "string", "description": "Working directory relative to workspace", "default": "."},
-                        "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 30, "default": 15},
+                        "timeout_sec": {"type": "integer", "minimum": 1, "maximum": 120, "default": 15},
                     },
                     "required": ["command"],
                     "additionalProperties": False,
@@ -849,6 +849,14 @@ class LocalToolExecutor:
                 "error": "Complex shell operators are blocked for safety. Use a single command only.",
             }
 
+        execution_mode = self._current_execution_mode()
+        session_id = self._current_session_id()
+        timeout_val = max(1, min(120, timeout_sec))
+
+        # Docker image commonly exposes python3, while users may type python.
+        if execution_mode == "docker" and argv[0] == "python":
+            argv[0] = "python3"
+
         base_cmd = argv[0]
         if base_cmd not in self.config.allowed_commands:
             return {
@@ -888,11 +896,11 @@ class LocalToolExecutor:
                 "stdout": _truncate_output(proc.stdout),
                 "stderr": _truncate_output(proc.stderr),
                 "cwd": str(real_cwd),
-                "command": command,
+                "command": " ".join(shlex.quote(x) for x in argv),
                 "execution_mode": execution_mode,
             }
         except subprocess.TimeoutExpired:
-            return {"ok": False, "error": f"Command timed out after {timeout_sec}s"}
+            return {"ok": False, "error": f"Command timed out after {timeout_val}s"}
         except Exception as exc:
             return {"ok": False, "error": f"run_shell failed: {exc}"}
 
