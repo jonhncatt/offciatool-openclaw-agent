@@ -282,7 +282,7 @@ class OfficeAgent:
                     "处理本地文件请求时，先调用工具再下结论，不要凭空判断权限。\n"
                     f"可访问路径根目录: {allowed_roots_text}\n"
                     "读取文件优先使用 list_directory/read_text_file；"
-                    "read_text_file 对本地 PDF/DOCX/MSG 会自动提取文本；"
+                    "read_text_file 对本地 PDF/DOCX/MSG/XLSX 会自动提取文本；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
                     "当用户要求“读完/完整读取/全量分析”时，默认已授权你连续读取，"
                     "应先调用 read_text_file(path=..., start_char=0, max_chars=1000000)，"
@@ -884,7 +884,7 @@ class OfficeAgent:
             self._StructuredTool.from_function(
                 name="read_text_file",
                 description=(
-                    "Read a local text/document file. Auto extracts text from PDF/DOCX/MSG. "
+                    "Read a local text/document file. Auto extracts text from PDF/DOCX/MSG/XLSX. "
                     "Supports chunked reads with start_char. "
                     "For complete reading use max_chars up to 1000000 and continue while has_more=true."
                 ),

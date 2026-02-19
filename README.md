@@ -135,9 +135,11 @@ cd $HOME\Desktop\officetool
 ### 图片/文档
 
 - 支持图片：png/jpg/jpeg/webp/gif/heic/heif
-- 支持文档：txt/md/csv/json/pdf/docx/msg 及常见代码文本
+- 支持文档：txt/md/csv/json/pdf/docx/msg/xlsx（含 xlsm/xltx/xltm）及常见代码文本
 - 图片直接送入多模态输入；文档会先抽取文本后送入模型
 - `.msg`（Outlook 邮件）会抽取主题/发件人/收件人/时间/正文/附件列表
+- `.xlsx` 会按工作表读取并转为结构化文本（行内以 `|` 分隔）
+- `.xls`（旧版二进制 Excel）暂不直接解析，建议先另存为 `.xlsx`
 - HEIC 优先本地转码为 JPEG；若环境缺少转码依赖会回退为原始 HEIC 并给出提示
 - 对无法结构化解析的二进制/未知类型文件，会自动附带十六进制预览，确保模型“看得到文件内容”
 
@@ -147,7 +149,7 @@ cd $HOME\Desktop\officetool
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
-- `read_text_file`: 读本地文本/文档（PDF/DOCX/MSG 自动提取文本，支持 `start_char + max_chars` 分块）
+- `read_text_file`: 读本地文本/文档（PDF/DOCX/MSG/XLSX 自动提取文本，支持 `start_char + max_chars` 分块）
 - `copy_file`: 二进制安全复制文件（推荐用于“复制整个文件”）
 - `extract_zip`: 解压本地 zip 到指定目录（支持覆盖开关和安全限制）
 - `write_text_file`: 新建/覆盖写文本文件

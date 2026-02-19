@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 import io
 import re
+import zipfile
 from html import unescape
 from pathlib import Path
 
 _OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _MSG_MARKERS_ASCII = (b"__substg1.0_", b"IPM.")
 _MSG_MARKERS_UTF16 = tuple(marker.decode("ascii").encode("utf-16-le") for marker in _MSG_MARKERS_ASCII)
+_XLSX_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 
 
 def _truncate(text: str, max_chars: int) -> str:
@@ -42,6 +44,92 @@ def _extract_docx(path: Path, max_chars: int) -> str:
     doc = Document(str(path))
     text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
     return _truncate(text, max_chars)
+
+
+def _xlsx_cell_to_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        try:
+            if isinstance(value, float) and value.is_integer():
+                return str(int(value))
+        except Exception:
+            pass
+        return str(value)
+    if hasattr(value, "isoformat"):
+        try:
+            return str(value.isoformat())
+        except Exception:
+            pass
+    return str(value).strip()
+
+
+def looks_like_xlsx_file(path: Path) -> bool:
+    try:
+        if not zipfile.is_zipfile(path):
+            return False
+        with zipfile.ZipFile(path, "r") as zf:
+            names = set(zf.namelist())
+        return "xl/workbook.xml" in names
+    except Exception:
+        return False
+
+
+def _extract_xlsx(path: Path, max_chars: int) -> str:
+    try:
+        from openpyxl import load_workbook  # lazy import
+    except Exception as exc:
+        raise RuntimeError(
+            "解析 .xlsx 需要依赖 openpyxl。请执行 `pip install -r requirements.txt` 后重试。"
+        ) from exc
+
+    wb = load_workbook(filename=str(path), read_only=True, data_only=True)
+    try:
+        lines: list[str] = ["[Excel 工作簿解析]"]
+        total_chars = len(lines[0])
+        truncated = False
+        for sheet in wb.worksheets:
+            title = (sheet.title or "").strip() or "Sheet"
+            sheet_header = f"\n--- Sheet: {title} ---"
+            lines.append(sheet_header)
+            total_chars += len(sheet_header)
+            if total_chars >= max_chars:
+                truncated = True
+                break
+
+            sheet_rows = 0
+            for row_idx, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+                cells = [_xlsx_cell_to_text(cell) for cell in row]
+                while cells and not cells[-1]:
+                    cells.pop()
+                if not cells or not any(cells):
+                    continue
+
+                row_line = f"{row_idx}: " + " | ".join(cells)
+                lines.append(row_line)
+                total_chars += len(row_line)
+                sheet_rows += 1
+                if total_chars >= max_chars:
+                    truncated = True
+                    break
+
+            if sheet_rows == 0:
+                empty_line = "[空表或无可读内容]"
+                lines.append(empty_line)
+                total_chars += len(empty_line)
+            if truncated:
+                break
+
+        if truncated:
+            lines.append("\n[内容已截断，工作簿内容较大]")
+        return _truncate("\n".join(lines), max_chars)
+    finally:
+        try:
+            wb.close()
+        except Exception:
+            pass
 
 
 def _html_to_text(html: str) -> str:
@@ -275,6 +363,12 @@ def extract_document_text(path: str, max_chars: int) -> str | None:
             return _extract_pdf(file_path, max_chars)
         if suffix == ".docx":
             return _extract_docx(file_path, max_chars)
+        if suffix in _XLSX_SUFFIXES:
+            return _extract_xlsx(file_path, max_chars)
+        if suffix == ".xls":
+            return "[暂不支持 .xls（二进制 Excel）直接解析，请先另存为 .xlsx 后再读取]"
+        if suffix in {".zip", ".bin"} and looks_like_xlsx_file(file_path):
+            return _extract_xlsx(file_path, max_chars)
         if suffix == ".msg" or looks_like_outlook_msg_file(file_path):
             return _extract_outlook_msg(file_path, max_chars)
     except Exception as exc:
