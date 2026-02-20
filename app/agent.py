@@ -300,6 +300,8 @@ class OfficeAgent:
                     "解压 zip 文件优先使用 extract_zip；"
                     "当用户要求“打开/读取/解析 .msg 邮件里的附件”时，优先调用 extract_msg_attachments(msg_path=...)；"
                     "拿到附件落盘路径后继续调用 read_text_file 或处理图片，不要要求用户手工找目录。\n"
+                    "当用户要求“解释邮件全部内容/完整解释邮件”时，默认范围=邮件正文+可解析附件内容；"
+                    "不要用“用户未要求附件”作为理由跳过附件解析。\n"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
                     "改写或新建文件优先使用 replace_in_file/write_text_file（大内容可分块配合 append_text_file），尽量使用绝对路径。\n"
                     "当 execution_mode=docker 且调用 run_shell 时，/workspace 与 /allowed/* 是主机目录挂载；"
@@ -1150,7 +1152,8 @@ class OfficeAgent:
             )
             msg_hint_line = (
                 "该文件是 MSG 邮件；若需读取其中附件（如 xlsx/png），先调用 "
-                "extract_msg_attachments(msg_path=该路径, dst_dir=目标目录)。\n"
+                "extract_msg_attachments(msg_path=该路径, dst_dir=目标目录)。"
+                "当用户说“完整/全部解释邮件”时，必须执行该步骤，不要跳过。\n"
                 if suffix == ".msg"
                 else ""
             )
@@ -1407,6 +1410,10 @@ class OfficeAgent:
             "do you want me to continue",
             "should i continue",
             "please provide instructions",
+            "你当前的指示中没有新增对读取附件内容的要求",
+            "没有新增对读取附件内容的要求",
+            "若后续需要解析",
+            "后续需要解析",
             "write_text_file",
             "append_text_file",
         )
