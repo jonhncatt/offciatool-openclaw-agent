@@ -678,6 +678,36 @@ class LocalToolExecutor:
             },
             {
                 "type": "function",
+                "name": "extract_msg_attachments",
+                "description": (
+                    "Extract attachments from a local Outlook .msg email into a target directory in allowed roots. "
+                    "Use this to open/read Excel/image attachments referenced inside .msg."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "msg_path": {"type": "string", "description": "Path to local .msg file"},
+                        "dst_dir": {
+                            "type": "string",
+                            "description": "Destination directory. Empty means <msg_stem>_attachments next to msg file.",
+                            "default": "",
+                        },
+                        "overwrite": {"type": "boolean", "default": True},
+                        "create_dirs": {"type": "boolean", "default": True},
+                        "max_attachments": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500},
+                        "max_total_bytes": {
+                            "type": "integer",
+                            "minimum": 1024,
+                            "maximum": 2147483648,
+                            "default": 524288000,
+                        },
+                    },
+                    "required": ["msg_path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "function",
                 "name": "write_text_file",
                 "description": "Create or overwrite a UTF-8 text file in workspace.",
                 "parameters": {
@@ -821,6 +851,8 @@ class LocalToolExecutor:
             return self.copy_file(**arguments)
         if name == "extract_zip":
             return self.extract_zip(**arguments)
+        if name == "extract_msg_attachments":
+            return self.extract_msg_attachments(**arguments)
         if name == "write_text_file":
             return self.write_text_file(**arguments)
         if name == "append_text_file":
@@ -1252,6 +1284,219 @@ class LocalToolExecutor:
             return {"ok": False, "error": f"Invalid zip archive: {zip_path}"}
         except Exception as exc:
             return {"ok": False, "error": f"extract_zip failed: {exc}"}
+
+    def extract_msg_attachments(
+        self,
+        msg_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_attachments: int = 500,
+        max_total_bytes: int = 524288000,
+    ) -> dict[str, Any]:
+        try:
+            msg_real = _resolve_source_path(self.config, msg_path)
+            if not msg_real.exists():
+                return {"ok": False, "error": f"MSG path not found: {msg_path}"}
+            if not msg_real.is_file():
+                return {"ok": False, "error": f"MSG path is not a file: {msg_path}"}
+
+            from app.attachments import looks_like_outlook_msg_file  # lazy import
+
+            suffix = msg_real.suffix.lower()
+            if suffix != ".msg" and not looks_like_outlook_msg_file(msg_real):
+                return {"ok": False, "error": f"Not an Outlook .msg file: {msg_path}"}
+
+            dst_raw = (dst_dir or "").strip()
+            if not dst_raw:
+                dst_raw = str(msg_real.parent / f"{msg_real.stem}_attachments")
+
+            dst_real = _resolve_workspace_path(self.config, dst_raw)
+            if dst_real.exists() and dst_real.is_file():
+                return {"ok": False, "error": f"Destination is a file, not directory: {dst_raw}"}
+            if not dst_real.exists():
+                if not create_dirs:
+                    return {"ok": False, "error": f"Destination directory not found: {dst_real}"}
+                dst_real.mkdir(parents=True, exist_ok=True)
+
+            attachment_limit = max(1, min(5000, int(max_attachments)))
+            total_limit = max(1024, min(2147483648, int(max_total_bytes)))
+
+            try:
+                import extract_msg  # lazy import
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": (
+                        "解析 .msg 附件需要依赖 extract-msg。请执行 "
+                        "`pip install -r requirements.txt` 后重试。"
+                    ),
+                    "detail": str(exc),
+                }
+
+            msg = extract_msg.openMsg(str(msg_real), strict=False, delayAttachments=False)
+            try:
+                attachments = list(getattr(msg, "attachments", []) or [])
+                if len(attachments) > attachment_limit:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"MSG attachments exceed max_attachments limit "
+                            f"({len(attachments)} > {attachment_limit})."
+                        ),
+                        "msg_path": str(msg_real),
+                        "dst_dir": str(dst_real),
+                    }
+
+                entries: list[dict[str, Any]] = []
+                files_saved = 0
+                files_skipped = 0
+                bytes_extracted = 0
+
+                for idx, att in enumerate(attachments, start=1):
+                    raw_name = (
+                        (getattr(att, "longFilename", None) or "")
+                        or (getattr(att, "filename", None) or "")
+                        or (getattr(att, "name", None) or "")
+                        or f"attachment_{idx}"
+                    )
+                    safe_name = _safe_filename(str(raw_name or ""))
+                    if safe_name == "download.bin":
+                        safe_name = f"attachment_{idx}.bin"
+
+                    att_type = str(getattr(att, "type", "") or "").upper()
+                    if "MSG" in att_type and not safe_name.lower().endswith(".msg"):
+                        safe_name = f"{safe_name}.msg"
+
+                    target = (dst_real / safe_name).resolve()
+                    if not _is_within(target, dst_real):
+                        return {
+                            "ok": False,
+                            "error": f"Unsafe attachment path detected: {safe_name}",
+                            "msg_path": str(msg_real),
+                            "dst_dir": str(dst_real),
+                        }
+
+                    if target.exists() and not overwrite:
+                        files_skipped += 1
+                        entries.append(
+                            {
+                                "index": idx,
+                                "name": safe_name,
+                                "status": "skipped_exists",
+                                "path": str(target),
+                            }
+                        )
+                        continue
+
+                    try:
+                        save_result = att.save(
+                            customPath=str(dst_real),
+                            customFilename=safe_name,
+                            overwriteExisting=bool(overwrite),
+                            extractEmbedded=True,
+                            skipEmbedded=False,
+                        )
+                    except Exception as exc:
+                        entries.append(
+                            {
+                                "index": idx,
+                                "name": safe_name,
+                                "status": "error",
+                                "error": str(exc),
+                            }
+                        )
+                        continue
+
+                    saved_paths: list[Path] = []
+                    if (
+                        isinstance(save_result, tuple)
+                        and len(save_result) >= 2
+                        and save_result[1] is not None
+                    ):
+                        payload = save_result[1]
+                        if isinstance(payload, str):
+                            saved_paths.append(Path(payload).resolve())
+                        elif isinstance(payload, list):
+                            for item in payload:
+                                if isinstance(item, str):
+                                    saved_paths.append(Path(item).resolve())
+
+                    if not saved_paths and target.exists():
+                        saved_paths.append(target)
+
+                    saved_payload: list[dict[str, Any]] = []
+                    for path_obj in saved_paths:
+                        if not path_obj.exists():
+                            continue
+                        if not _is_within(path_obj, dst_real):
+                            continue
+                        size = path_obj.stat().st_size if path_obj.is_file() else None
+                        if isinstance(size, int):
+                            bytes_extracted += size
+                        saved_payload.append(
+                            {
+                                "path": str(path_obj),
+                                "is_dir": path_obj.is_dir(),
+                                "bytes": size,
+                            }
+                        )
+
+                    if bytes_extracted > total_limit:
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"Extracted bytes exceed max_total_bytes limit "
+                                f"({bytes_extracted} > {total_limit})."
+                            ),
+                            "msg_path": str(msg_real),
+                            "dst_dir": str(dst_real),
+                            "attachments_total": len(attachments),
+                            "files_saved": files_saved,
+                            "files_skipped": files_skipped,
+                            "bytes_extracted": bytes_extracted,
+                            "entries": entries,
+                        }
+
+                    if saved_payload:
+                        files_saved += 1
+                        entries.append(
+                            {
+                                "index": idx,
+                                "name": safe_name,
+                                "status": "saved",
+                                "saved": saved_payload,
+                            }
+                        )
+                    else:
+                        entries.append(
+                            {
+                                "index": idx,
+                                "name": safe_name,
+                                "status": "no_output",
+                            }
+                        )
+
+                return {
+                    "ok": True,
+                    "msg_path": str(msg_real),
+                    "dst_dir": str(dst_real),
+                    "attachments_total": len(attachments),
+                    "files_saved": files_saved,
+                    "files_skipped": files_skipped,
+                    "bytes_extracted": bytes_extracted,
+                    "entries": entries,
+                    "overwrite": bool(overwrite),
+                }
+            finally:
+                close = getattr(msg, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+        except Exception as exc:
+            return {"ok": False, "error": f"extract_msg_attachments failed: {exc}"}
 
     def write_text_file(
         self, path: str, content: str, overwrite: bool = True, create_dirs: bool = True

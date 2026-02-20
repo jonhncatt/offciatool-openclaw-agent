@@ -77,6 +77,15 @@ class ExtractZipArgs(BaseModel):
     max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
 
 
+class ExtractMsgAttachmentsArgs(BaseModel):
+    msg_path: str
+    dst_dir: str = Field(default="", description="Destination directory. Empty means <msg_stem>_attachments.")
+    overwrite: bool = True
+    create_dirs: bool = True
+    max_attachments: int = Field(default=500, ge=1, le=5000)
+    max_total_bytes: int = Field(default=524288000, ge=1024, le=2147483648)
+
+
 class WriteTextFileArgs(BaseModel):
     path: str
     content: str
@@ -289,6 +298,8 @@ class OfficeAgent:
                     "若 has_more=true 再自动续读后续分块，不要把“是否继续读取”抛回给用户；"
                     "复制文件优先使用 copy_file（不要用读写拼接，避免截断）；"
                     "解压 zip 文件优先使用 extract_zip；"
+                    "当用户要求“打开/读取/解析 .msg 邮件里的附件”时，优先调用 extract_msg_attachments(msg_path=...)；"
+                    "拿到附件落盘路径后继续调用 read_text_file 或处理图片，不要要求用户手工找目录。\n"
                     "用户上传附件时会提供本地路径，处理附件文件请优先使用该路径，不要凭空猜路径。\n"
                     "改写或新建文件优先使用 replace_in_file/write_text_file（大内容可分块配合 append_text_file），尽量使用绝对路径。\n"
                     "当 execution_mode=docker 且调用 run_shell 时，/workspace 与 /allowed/* 是主机目录挂载；"
@@ -904,6 +915,15 @@ class OfficeAgent:
                 func=self._extract_zip_tool,
             ),
             self._StructuredTool.from_function(
+                name="extract_msg_attachments",
+                description=(
+                    "Extract attachments from a local .msg email into a target directory, "
+                    "then continue reading those files."
+                ),
+                args_schema=ExtractMsgAttachmentsArgs,
+                func=self._extract_msg_attachments_tool,
+            ),
+            self._StructuredTool.from_function(
                 name="write_text_file",
                 description="Create or overwrite a UTF-8 text file in workspace.",
                 args_schema=WriteTextFileArgs,
@@ -997,6 +1017,25 @@ class OfficeAgent:
             overwrite=overwrite,
             create_dirs=create_dirs,
             max_entries=max_entries,
+            max_total_bytes=max_total_bytes,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _extract_msg_attachments_tool(
+        self,
+        msg_path: str,
+        dst_dir: str = "",
+        overwrite: bool = True,
+        create_dirs: bool = True,
+        max_attachments: int = 500,
+        max_total_bytes: int = 524288000,
+    ) -> str:
+        result = self.tools.extract_msg_attachments(
+            msg_path=msg_path,
+            dst_dir=dst_dir,
+            overwrite=overwrite,
+            create_dirs=create_dirs,
+            max_attachments=max_attachments,
             max_total_bytes=max_total_bytes,
         )
         return json.dumps(result, ensure_ascii=False)
@@ -1109,6 +1148,12 @@ class OfficeAgent:
                 if suffix == ".zip"
                 else ""
             )
+            msg_hint_line = (
+                "该文件是 MSG 邮件；若需读取其中附件（如 xlsx/png），先调用 "
+                "extract_msg_attachments(msg_path=该路径, dst_dir=目标目录)。\n"
+                if suffix == ".msg"
+                else ""
+            )
 
             if kind == "document":
                 if history_turn_count > 0 and file_size > _FOLLOWUP_INLINE_MAX_BYTES:
@@ -1117,7 +1162,7 @@ class OfficeAgent:
                             "type": "text",
                             "text": (
                                 f"[附件文档: {name}] 当前为跟进轮次，为避免重复消耗 token，本轮默认仅提供路径。\n"
-                                f"{local_path_line}{file_size_line}{zip_hint_line}"
+                                f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
                                 "你应直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取，不要先询问用户。"
                             ),
                         }
@@ -1134,7 +1179,7 @@ class OfficeAgent:
                             "type": "text",
                             "text": (
                                 f"[附件文档: {name}] 文件较大，为避免首轮请求长时间无响应，本轮不自动注入全文。\n"
-                                f"{local_path_line}{file_size_line}{zip_hint_line}"
+                                f"{local_path_line}{file_size_line}{zip_hint_line}{msg_hint_line}"
                                 "你应直接调用 read_text_file(path=该路径, start_char=0, max_chars=200000) 分块读取后再分析，不要先询问用户。"
                             ),
                         }
@@ -1150,7 +1195,7 @@ class OfficeAgent:
                     parts.append(
                         {
                             "type": "text",
-                            "text": f"\n[附件文档: {name}]\n{local_path_line}{zip_hint_line}{extracted}",
+                            "text": f"\n[附件文档: {name}]\n{local_path_line}{zip_hint_line}{msg_hint_line}{extracted}",
                         }
                     )
                     notes.append(f"文档:{name}")
@@ -1164,7 +1209,7 @@ class OfficeAgent:
                                 "type": "text",
                                 "text": (
                                     f"[附件文档: {name}] 未识别为结构化文本，已附带文件预览。\n"
-                                    f"{local_path_line}{zip_hint_line}{preview}"
+                                    f"{local_path_line}{zip_hint_line}{msg_hint_line}{preview}"
                                 ),
                             }
                         )

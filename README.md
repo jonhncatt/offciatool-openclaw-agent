@@ -145,13 +145,14 @@ cd $HOME\Desktop\officetool
 
 ### Agent 工具调用
 
-默认开放 12 个工具：
+默认开放 13 个工具：
 
 - `run_shell`: 在工作目录下执行单条命令（禁用管道/链式操作）
 - `list_directory`: 列目录
 - `read_text_file`: 读本地文本/文档（PDF/DOCX/MSG/XLSX 自动提取文本，支持 `start_char + max_chars` 分块）
 - `copy_file`: 二进制安全复制文件（推荐用于“复制整个文件”）
 - `extract_zip`: 解压本地 zip 到指定目录（支持覆盖开关和安全限制）
+- `extract_msg_attachments`: 解包 `.msg` 邮件附件到目录（可继续读取其中 xlsx/png 等）
 - `write_text_file`: 新建/覆盖写文本文件
 - `replace_in_file`: 按目标文本做替换（支持一次或多次）
 - `search_web`: 关键词联网搜索，返回候选链接与摘要（优先用于“先找链接”）
@@ -169,6 +170,7 @@ cd $HOME\Desktop\officetool
 - 网页抓取会自动从 HTML 提取正文文本；若目标站点是 JS 动态渲染/反爬页面，仍可能信息较少
 - `fetch_web` 遇到 PDF 会尽量抽取正文文本；需要原始文件时请用 `download_web_file`
 - 上传附件会把“本地路径”注入上下文；压缩包建议直接 `extract_zip(zip_path=该路径, ...)`
+- 对 `.msg` 邮件中附件（xlsx/png 等）可先 `extract_msg_attachments(msg_path=该路径, ...)` 再读取
 - 可用 `OFFICETOOL_ENABLE_SESSION_TOOLS=false` 关闭会话检索工具（`list_sessions/read_session_history`）
 - 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互
 - 对“新闻/实时”类问题，后端会自动做一次 `search_web` 预搜索并把候选链接注入上下文，减少反复追问
