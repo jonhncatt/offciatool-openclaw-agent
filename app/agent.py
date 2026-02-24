@@ -441,14 +441,16 @@ class OfficeAgent:
                 effective_model,
             )
 
-        auto_nudge_budget = 2
+        has_attachments = bool(attachment_metas)
+        has_msg_attachment = any(str(meta.get("suffix", "") or "").lower() == ".msg" for meta in attachment_metas)
+        auto_nudge_budget = 4 if has_attachments else 2
         for _ in range(24):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not settings.enable_tools or not tool_calls:
                 if (
                     settings.enable_tools
                     and auto_nudge_budget > 0
-                    and self._looks_like_permission_gate(ai_msg)
+                    and self._looks_like_permission_gate(ai_msg, has_attachments=has_attachments)
                 ):
                     auto_nudge_budget -= 1
                     add_trace("检测到模型在等待用户确认，后端已自动要求其直接执行工具。")
@@ -458,15 +460,28 @@ class OfficeAgent:
                         detail="模型出现“是否继续读取”倾向，已追加系统指令要求直接执行。",
                     )
                     messages.append(ai_msg)
+                    nudge_lines = [
+                        "不要询问用户是否继续读取、是否继续写入、是否授权或是否确认。",
+                        "不要让用户在方案A/方案B之间选择，也不要要求用户二次确认。",
+                        "用户当前请求已授权你直接继续执行。",
+                        "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），",
+                        "并直接返回最终结果。",
+                    ]
+                    if has_attachments:
+                        nudge_lines.extend(
+                            [
+                                "本轮存在附件输入，禁止回复“已完成解析/无需调用工具/后续再解析”这类占位话术。",
+                                "必须先调用工具读取或解析附件内容，再给出结论。",
+                            ]
+                        )
+                    if has_msg_attachment:
+                        nudge_lines.append(
+                            "检测到 .msg 邮件附件时，先调用 extract_msg_attachments(msg_path=...)，"
+                            "再读取提取出的附件文件。"
+                        )
                     messages.append(
                         self._SystemMessage(
-                            content=(
-                                "不要询问用户是否继续读取、是否继续写入、是否授权或是否确认。"
-                                "不要让用户在方案A/方案B之间选择，也不要要求用户二次确认。"
-                                "用户当前请求已授权你直接继续执行。"
-                                "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），"
-                                "并直接返回最终结果。"
-                            )
+                            content="".join(nudge_lines)
                         )
                     )
                     try:
@@ -1370,12 +1385,32 @@ class OfficeAgent:
             return f"{int(size)} {units[idx]}"
         return f"{size:.2f} {units[idx]}"
 
-    def _looks_like_permission_gate(self, ai_msg: Any) -> bool:
+    def _looks_like_permission_gate(self, ai_msg: Any, has_attachments: bool = False) -> bool:
         text = self._content_to_text(getattr(ai_msg, "content", "")).strip().lower()
         if not text:
             return False
         if len(text) > 5000:
             text = text[:5000]
+        attachment_deferral_patterns = (
+            "已完成解析",
+            "已经完成解析",
+            "已经完成了解析",
+            "已解析完成",
+            "已经解析完成",
+            "无需调用工具",
+            "无需再调用工具",
+            "无需再次调用工具",
+            "不需要调用工具",
+            "不必调用工具",
+            "already parsed",
+            "already finished parsing",
+            "no need to call tool",
+            "no need to use tool",
+            "no tools needed",
+        )
+        if has_attachments and any(p in text for p in attachment_deferral_patterns):
+            return True
+
         patterns = (
             "要不要",
             "是否继续",
@@ -1414,6 +1449,13 @@ class OfficeAgent:
             "没有新增对读取附件内容的要求",
             "若后续需要解析",
             "后续需要解析",
+            "无需调用工具",
+            "无需再调用工具",
+            "无需再次调用工具",
+            "不需要调用工具",
+            "已完成解析",
+            "已经完成了解析",
+            "已解析完成",
             "write_text_file",
             "append_text_file",
         )
@@ -1431,8 +1473,12 @@ class OfficeAgent:
             "append_text_file",
             "chunk",
             "附件",
+            "邮件",
             "文档",
             "path",
+            "tool",
+            "解析",
+            "解释",
         )
         return any(h in text for h in file_hints)
 
