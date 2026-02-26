@@ -312,6 +312,8 @@ class OfficeAgent:
                     "仅在目标路径不明确、权限不足或文件不存在时再向用户提问。\n"
                     "默认不要向用户逐步播报内部工具执行过程（例如“正在自动写入/继续分块写入/继续读取”）；"
                     "除非用户明确要求过程日志，否则直接给最终结果和必要说明。\n"
+                    "对于纯知识问答（不需要读写文件或联网抓取），直接回答问题本身；"
+                    "不要先输出“收到/会严格遵守/无需调用工具”等流程性话术。\n"
                     "不要给用户提供“方案A/方案B/二选一”来规避工具执行；"
                     "只要路径和目标明确，就直接调用工具完成并返回结果。\n"
                     "不要声称“工具未启用/工具未激活/系统无法触发工具”，"
@@ -443,6 +445,10 @@ class OfficeAgent:
 
         has_attachments = bool(attachment_metas)
         has_msg_attachment = any(str(meta.get("suffix", "") or "").lower() == ".msg" for meta in attachment_metas)
+        request_requires_tools = self._request_likely_requires_tools(
+            user_message=user_message,
+            attachment_metas=attachment_metas,
+        )
         auto_nudge_budget = 4 if has_attachments else 2
         for _ in range(24):
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
@@ -450,23 +456,40 @@ class OfficeAgent:
                 if (
                     settings.enable_tools
                     and auto_nudge_budget > 0
-                    and self._looks_like_permission_gate(ai_msg, has_attachments=has_attachments)
+                    and self._looks_like_permission_gate(
+                        ai_msg,
+                        has_attachments=has_attachments,
+                        request_requires_tools=request_requires_tools,
+                    )
                 ):
                     auto_nudge_budget -= 1
-                    add_trace("检测到模型在等待用户确认，后端已自动要求其直接执行工具。")
+                    add_trace("检测到模型回复出现流程化确认/占位话术，后端已追加纠偏指令。")
                     add_debug(
                         stage="backend_warning",
                         title="自动纠偏：避免逐步确认",
-                        detail="模型出现“是否继续读取”倾向，已追加系统指令要求直接执行。",
+                        detail="模型出现流程化确认/占位话术，已追加系统指令要求直接产出结果。",
                     )
                     messages.append(ai_msg)
                     nudge_lines = [
+                        "不要复述规则或承诺（例如“收到、会严格遵守、无需调用工具”）。",
                         "不要询问用户是否继续读取、是否继续写入、是否授权或是否确认。",
                         "不要让用户在方案A/方案B之间选择，也不要要求用户二次确认。",
-                        "用户当前请求已授权你直接继续执行。",
-                        "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），",
-                        "并直接返回最终结果。",
                     ]
+                    if request_requires_tools or has_attachments:
+                        nudge_lines.extend(
+                            [
+                                "用户当前请求已授权你直接继续执行。",
+                                "请立即调用必要工具完成任务（例如 read_text_file/write_text_file/append_text_file/replace_in_file），",
+                                "并直接返回最终结果。",
+                            ]
+                        )
+                    else:
+                        nudge_lines.extend(
+                            [
+                                "当前问题可直接回答，不需要工具时请直接给结论和关键要点。",
+                                "不要解释内部流程，也不要让用户再给下一步指令。",
+                            ]
+                        )
                     if has_attachments:
                         nudge_lines.extend(
                             [
@@ -481,7 +504,7 @@ class OfficeAgent:
                         )
                     messages.append(
                         self._SystemMessage(
-                            content="".join(nudge_lines)
+                            content="\n".join(nudge_lines)
                         )
                     )
                     try:
@@ -1385,7 +1408,48 @@ class OfficeAgent:
             return f"{int(size)} {units[idx]}"
         return f"{size:.2f} {units[idx]}"
 
-    def _looks_like_permission_gate(self, ai_msg: Any, has_attachments: bool = False) -> bool:
+    def _request_likely_requires_tools(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
+        if attachment_metas:
+            return True
+        text = (user_message or "").strip().lower()
+        if not text:
+            return False
+        if "http://" in text or "https://" in text:
+            return True
+
+        direct_hints = (
+            "文件",
+            "附件",
+            "路径",
+            "目录",
+            "read_text_file",
+            "write_text_file",
+            "append_text_file",
+            "replace_in_file",
+            "run_shell",
+            "search_web",
+            "fetch_web",
+            "download_web_file",
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".ppt",
+            ".pptx",
+            ".xlsx",
+            ".csv",
+            ".zip",
+            ".msg",
+        )
+        if any(hint in text for hint in direct_hints):
+            return True
+        return any(hint in text for hint in _NEWS_HINTS)
+
+    def _looks_like_permission_gate(
+        self,
+        ai_msg: Any,
+        has_attachments: bool = False,
+        request_requires_tools: bool = False,
+    ) -> bool:
         text = self._content_to_text(getattr(ai_msg, "content", "")).strip().lower()
         if not text:
             return False
@@ -1411,7 +1475,7 @@ class OfficeAgent:
         if has_attachments and any(p in text for p in attachment_deferral_patterns):
             return True
 
-        patterns = (
+        general_gate_patterns = (
             "要不要",
             "是否继续",
             "是否要我",
@@ -1420,6 +1484,23 @@ class OfficeAgent:
             "选一个",
             "选一种",
             "二选一",
+            "do you want me to continue",
+            "should i continue",
+            "if you agree",
+            "if agreed",
+            "如你同意",
+            "如果同意",
+            "若你同意",
+            "如果你同意",
+            "如您同意",
+            "若您同意",
+            "同意的话",
+        )
+        if not request_requires_tools and not has_attachments:
+            return any(p in text for p in general_gate_patterns)
+
+        patterns = (
+            *general_gate_patterns,
             "两种方案",
             "可行方案",
             "方案a",
@@ -1476,9 +1557,7 @@ class OfficeAgent:
             "邮件",
             "文档",
             "path",
-            "tool",
             "解析",
-            "解释",
         )
         return any(h in text for h in file_hints)
 
