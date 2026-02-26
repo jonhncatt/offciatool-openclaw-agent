@@ -122,6 +122,8 @@ class HealthResponse(BaseModel):
     execution_mode_default: Literal["host", "docker"] = "host"
     docker_available: bool = False
     docker_message: str | None = None
+    web_allow_all_domains: bool = True
+    web_allowed_domains: list[str] = Field(default_factory=list)
 
 
 class TokenStatsResponse(BaseModel):

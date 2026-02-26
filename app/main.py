@@ -151,6 +151,8 @@ def health() -> HealthResponse:
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,
         docker_message=docker_msg,
+        web_allow_all_domains=config.web_allow_all_domains,
+        web_allowed_domains=config.web_allowed_domains,
     )
 
 

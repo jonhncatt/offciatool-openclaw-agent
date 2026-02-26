@@ -1090,9 +1090,14 @@ if (deleteSessionBtn) {
     const restored = await restoreSessionIfPossible();
     if (!restored) {
       const dockerTip = health.docker_available ? "Docker 可用" : "Docker 未就绪";
+      const allowAllWebDomains = Boolean(health.web_allow_all_domains);
+      const webDomains = Array.isArray(health.web_allowed_domains) ? health.web_allowed_domains : [];
+      const webPolicyTip = allowAllWebDomains
+        ? "联网域名：不限制"
+        : `联网域名白名单：${webDomains.length ? webDomains.join(", ") : "(空)"}`;
       addBubble(
         "system",
-        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
+        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。\n${webPolicyTip}${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
       );
     }
     await refreshTokenStatsFromServer();
