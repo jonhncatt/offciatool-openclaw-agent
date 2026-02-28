@@ -27,6 +27,9 @@ from app.models import (
     SessionListItem,
     SessionListResponse,
     SessionTurn,
+    SandboxDrillRequest,
+    SandboxDrillResponse,
+    SandboxDrillStep,
     TokenStatsResponse,
     TokenTotals,
     TokenUsage,
@@ -250,6 +253,170 @@ def chat(req: ChatRequest) -> ChatResponse:
     return _process_chat_request(req)
 
 
+def _resolve_execution_mode(requested_mode: str | None) -> str:
+    mode = str(requested_mode or "").strip().lower()
+    if mode in {"host", "docker"}:
+        return mode
+    return config.execution_mode
+
+
+def _append_drill_step(
+    steps: list[SandboxDrillStep],
+    *,
+    name: str,
+    ok: bool,
+    detail: str,
+    started_at: float,
+) -> None:
+    steps.append(
+        SandboxDrillStep(
+            name=name,
+            ok=bool(ok),
+            detail=str(detail),
+            duration_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+        )
+    )
+
+
+@app.post("/api/sandbox/drill", response_model=SandboxDrillResponse)
+def sandbox_drill(req: SandboxDrillRequest) -> SandboxDrillResponse:
+    run_id = str(uuid.uuid4())
+    execution_mode = _resolve_execution_mode(req.execution_mode)
+    agent = get_agent()
+    docker_ok, docker_msg = agent.tools.docker_status()
+    steps: list[SandboxDrillStep] = []
+    failed = 0
+    drill_session_id = f"__drill__{run_id}"
+    pwd_result: dict[str, Any] | None = None
+
+    started = time.perf_counter()
+    _append_drill_step(
+        steps,
+        name="runtime_context",
+        ok=True,
+        detail=f"run_id={run_id}, execution_mode={execution_mode}, session_id={drill_session_id}",
+        started_at=started,
+    )
+
+    if execution_mode == "docker":
+        started = time.perf_counter()
+        docker_step_ok = bool(docker_ok)
+        _append_drill_step(
+            steps,
+            name="docker_ready",
+            ok=docker_step_ok,
+            detail=docker_msg or ("Docker server ready." if docker_step_ok else "Docker unavailable."),
+            started_at=started,
+        )
+        if not docker_step_ok:
+            failed += 1
+
+    agent.tools.set_runtime_context(execution_mode=execution_mode, session_id=drill_session_id)
+    try:
+        started = time.perf_counter()
+        list_result = agent.tools.list_directory(path=".", max_entries=20)
+        list_ok = bool(list_result.get("ok"))
+        list_detail = (
+            f"path={list_result.get('path', '')}, entries={len(list_result.get('entries') or [])}"
+            if list_ok
+            else str(list_result.get("error") or "list_directory failed")
+        )
+        _append_drill_step(
+            steps,
+            name="list_directory",
+            ok=list_ok,
+            detail=list_detail,
+            started_at=started,
+        )
+        if not list_ok:
+            failed += 1
+
+        started = time.perf_counter()
+        pwd_result = agent.tools.run_shell(command="pwd", cwd=".", timeout_sec=12)
+        pwd_ok = bool(pwd_result.get("ok"))
+        pwd_detail = (
+            f"mode={pwd_result.get('execution_mode')}, host_cwd={pwd_result.get('host_cwd')}, "
+            f"sandbox_cwd={pwd_result.get('sandbox_cwd') or '-'}"
+            if pwd_ok
+            else str(pwd_result.get("error") or "run_shell pwd failed")
+        )
+        _append_drill_step(
+            steps,
+            name="run_shell_pwd",
+            ok=pwd_ok,
+            detail=pwd_detail,
+            started_at=started,
+        )
+        if not pwd_ok:
+            failed += 1
+
+        started = time.perf_counter()
+        if "python3" in config.allowed_commands:
+            py_result = agent.tools.run_shell(command="python3 --version", cwd=".", timeout_sec=12)
+            py_ok = bool(py_result.get("ok"))
+            py_out = str(py_result.get("stdout") or py_result.get("stderr") or "").strip().splitlines()
+            py_detail = py_out[0] if py_out else (
+                str(py_result.get("error") or "python3 --version failed") if not py_ok else "python3 ok"
+            )
+            _append_drill_step(
+                steps,
+                name="run_shell_python3_version",
+                ok=py_ok,
+                detail=py_detail,
+                started_at=started,
+            )
+            if not py_ok:
+                failed += 1
+        else:
+            _append_drill_step(
+                steps,
+                name="run_shell_python3_version",
+                ok=True,
+                detail="skipped: python3 is not in OFFICETOOL_ALLOWED_COMMANDS",
+                started_at=started,
+            )
+
+        if execution_mode == "docker":
+            started = time.perf_counter()
+            mapping_ok = False
+            mapping_detail = "missing docker pwd result"
+            if isinstance(pwd_result, dict) and pwd_result.get("ok"):
+                mode = str(pwd_result.get("execution_mode") or "").strip().lower()
+                host_cwd = str(pwd_result.get("host_cwd") or "").strip()
+                sandbox_cwd = str(pwd_result.get("sandbox_cwd") or "").strip()
+                mounts = pwd_result.get("mount_mappings") if isinstance(pwd_result.get("mount_mappings"), list) else []
+                mapping_ok = mode == "docker" and bool(host_cwd) and bool(sandbox_cwd) and bool(mounts)
+                mapping_detail = (
+                    f"mode={mode}, host_cwd={host_cwd}, sandbox_cwd={sandbox_cwd}, mount_count={len(mounts)}"
+                )
+            _append_drill_step(
+                steps,
+                name="docker_path_mapping",
+                ok=mapping_ok,
+                detail=mapping_detail,
+                started_at=started,
+            )
+            if not mapping_ok:
+                failed += 1
+    finally:
+        agent.tools.clear_runtime_context()
+
+    if failed == 0:
+        summary = f"沙盒演练通过（{len(steps)} 步）。"
+    else:
+        summary = f"沙盒演练发现 {failed} 个失败步骤（共 {len(steps)} 步）。"
+
+    return SandboxDrillResponse(
+        ok=failed == 0,
+        run_id=run_id,
+        execution_mode=execution_mode,
+        docker_available=docker_ok,
+        docker_message=docker_msg,
+        summary=summary,
+        steps=steps,
+    )
+
+
 def _emit_progress(progress_cb: Callable[[dict[str, Any]], None] | None, event: str, **payload: Any) -> None:
     if not progress_cb:
         return
@@ -322,6 +489,7 @@ def _process_chat_request(
             execution_plan,
             execution_trace,
             debug_flow,
+            agent_panels,
             token_usage,
             effective_model,
         ) = agent.run_chat(
@@ -423,6 +591,7 @@ def _process_chat_request(
             execution_plan=execution_plan,
             execution_trace=execution_trace,
             debug_flow=debug_flow,
+            agent_panels=agent_panels,
             missing_attachment_ids=missing_attachment_ids,
             token_usage=TokenUsage(**token_usage),
             session_token_totals=TokenTotals(**session_totals_raw),

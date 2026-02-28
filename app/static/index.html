@@ -64,6 +64,8 @@
         </label>
 
         <button id="newSessionBtn" class="secondary">新建会话</button>
+        <button id="sandboxDrillBtn" class="secondary">沙盒演练</button>
+        <div class="field-hint">按当前执行环境进行只读健康检查（目录读取、命令执行、Docker 映射等）。</div>
 
         <div class="session-box">
           <div class="session-title">Session ID</div>
@@ -110,6 +112,10 @@
           <details class="runtime-details">
             <summary>本轮执行流程</summary>
             <pre id="runTraceView" class="runtime-pre">暂无执行轨迹</pre>
+          </details>
+          <details class="runtime-details">
+            <summary>多 Agent 透明层</summary>
+            <pre id="runAgentPanelsView" class="runtime-pre">暂无多 Agent 摘要</pre>
           </details>
           <details class="runtime-details">
             <summary>LLM ↔ 后端交换（调试）</summary>

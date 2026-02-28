@@ -35,6 +35,13 @@ class DebugFlowItem(BaseModel):
     detail: str
 
 
+class AgentPanel(BaseModel):
+    role: str
+    title: str
+    summary: str = ""
+    bullets: list[str] = Field(default_factory=list)
+
+
 class TokenUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
@@ -65,6 +72,7 @@ class ChatResponse(BaseModel):
     execution_plan: list[str] = Field(default_factory=list)
     execution_trace: list[str] = Field(default_factory=list)
     debug_flow: list[DebugFlowItem] = Field(default_factory=list)
+    agent_panels: list[AgentPanel] = Field(default_factory=list)
     missing_attachment_ids: list[str] = Field(default_factory=list)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     session_token_totals: TokenTotals = Field(default_factory=TokenTotals)
@@ -134,3 +142,24 @@ class TokenStatsResponse(BaseModel):
 
 class ClearStatsResponse(BaseModel):
     ok: bool
+
+
+class SandboxDrillRequest(BaseModel):
+    execution_mode: Literal["host", "docker"] | None = None
+
+
+class SandboxDrillStep(BaseModel):
+    name: str
+    ok: bool
+    detail: str
+    duration_ms: int = 0
+
+
+class SandboxDrillResponse(BaseModel):
+    ok: bool
+    run_id: str
+    execution_mode: Literal["host", "docker"] = "host"
+    docker_available: bool = False
+    docker_message: str | None = None
+    summary: str = ""
+    steps: list[SandboxDrillStep] = Field(default_factory=list)

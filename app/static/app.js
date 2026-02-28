@@ -3,6 +3,7 @@ const state = {
   uploading: false,
   sendingSessionIds: new Set(),
   attachments: [],
+  drilling: false,
 };
 const SESSION_STORAGE_KEY = "officetool.session_id";
 
@@ -13,6 +14,7 @@ const dropZone = document.getElementById("dropZone");
 const messageInput = document.getElementById("messageInput");
 const sendBtn = document.getElementById("sendBtn");
 const newSessionBtn = document.getElementById("newSessionBtn");
+const sandboxDrillBtn = document.getElementById("sandboxDrillBtn");
 const sessionIdView = document.getElementById("sessionIdView");
 const sessionHistoryView = document.getElementById("sessionHistoryView");
 const refreshSessionsBtn = document.getElementById("refreshSessionsBtn");
@@ -35,6 +37,7 @@ const runStageText = document.getElementById("runStageText");
 const runStepList = document.getElementById("runStepList");
 const runPayloadView = document.getElementById("runPayloadView");
 const runTraceView = document.getElementById("runTraceView");
+const runAgentPanelsView = document.getElementById("runAgentPanelsView");
 const runLlmFlowView = document.getElementById("runLlmFlowView");
 
 const RUN_FLOW_STEPS = [
@@ -55,6 +58,9 @@ const LLM_FLOW_STAGE_LABELS = {
   llm_error: "LLM错误",
   backend_warning: "后端告警",
   backend_pricing: "计费处理",
+  multi_agent_planner: "Planner",
+  multi_agent_reviewer: "Reviewer",
+  multi_agent_revision: "Revision",
 };
 
 const MODE_PRESETS = {
@@ -187,6 +193,11 @@ function updateSendAvailability() {
   const sid = currentSessionKey();
   const disabled = Boolean(state.uploading || (sid && isSessionSending(sid)));
   sendBtn.disabled = disabled;
+}
+
+function updateDrillAvailability() {
+  if (!sandboxDrillBtn) return;
+  sandboxDrillBtn.disabled = Boolean(state.drilling);
 }
 
 function refreshSession() {
@@ -537,6 +548,10 @@ async function streamChatRequest(body, handlers = {}) {
         handlers.onToolEvent?.(payload);
         continue;
       }
+      if (event === "agent_state") {
+        handlers.onAgentState?.(payload);
+        continue;
+      }
       if (event === "heartbeat") {
         handlers.onHeartbeat?.(payload);
         continue;
@@ -628,6 +643,38 @@ function renderRunTrace(traceItems = [], toolEvents = []) {
   }
 
   runTraceView.textContent = lines.join("\n");
+}
+
+function renderAgentPanels(panels = [], plan = []) {
+  if (!runAgentPanelsView) return;
+
+  const lines = [];
+  if (Array.isArray(plan) && plan.length) {
+    lines.push("Execution Plan:");
+    plan.forEach((item, idx) => {
+      lines.push(`${idx + 1}. ${String(item || "")}`);
+    });
+    lines.push("");
+  }
+
+  if (Array.isArray(panels) && panels.length) {
+    panels.forEach((panel, idx) => {
+      const role = String(panel?.role || `agent_${idx + 1}`);
+      const title = String(panel?.title || role);
+      const summary = String(panel?.summary || "").trim();
+      const bullets = Array.isArray(panel?.bullets) ? panel.bullets : [];
+      lines.push(`[${idx + 1}] ${title} (${role})`);
+      if (summary) lines.push(summary);
+      bullets.forEach((item) => lines.push(`- ${String(item || "")}`));
+      lines.push("");
+    });
+  }
+
+  if (!lines.length) {
+    runAgentPanelsView.textContent = "暂无多 Agent 摘要";
+    return;
+  }
+  runAgentPanelsView.textContent = lines.join("\n").trim();
 }
 
 function renderLlmFlow(items = []) {
@@ -780,6 +827,110 @@ function getSettings() {
   };
 }
 
+async function runSandboxDrill() {
+  if (state.drilling) return;
+
+  const settings = getSettings();
+  const payload = {
+    execution_mode: settings.execution_mode || null,
+  };
+  const modeLabel = payload.execution_mode || "(backend default)";
+
+  state.drilling = true;
+  updateDrillAvailability();
+  setRunStage("进行中", `开始沙盒演练，执行环境 ${modeLabel}`, "prepare", "working");
+  if (runPayloadView) {
+    runPayloadView.textContent = `sandbox drill payload:\n${formatJsonPreview(payload)}`;
+  }
+  renderRunTrace(["沙盒演练请求已发送。"], []);
+  renderAgentPanels([], []);
+  renderLlmFlow([
+    {
+      step: 1,
+      stage: "frontend_prepare",
+      title: "前端发起沙盒演练",
+      detail: `POST /api/sandbox/drill\nexecution_mode=${modeLabel}`,
+    },
+  ]);
+
+  try {
+    const res = await fetch("/api/sandbox/drill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data?.detail) detail = String(data.detail);
+      } catch {}
+      throw new Error(detail);
+    }
+
+    const data = await res.json();
+    const steps = Array.isArray(data?.steps) ? data.steps : [];
+    const trace = [
+      `run_id: ${data?.run_id || "-"}`,
+      `execution_mode: ${data?.execution_mode || "-"}`,
+      `summary: ${data?.summary || "-"}`,
+      "",
+      "steps:",
+    ];
+    steps.forEach((step, idx) => {
+      const okText = step?.ok ? "OK" : "FAIL";
+      const ms = Number(step?.duration_ms || 0);
+      trace.push(
+        `${idx + 1}. [${okText}] ${step?.name || "unnamed"} (${ms} ms) - ${String(step?.detail || "")}`
+      );
+    });
+    renderRunTrace(trace, []);
+    renderAgentPanels([], []);
+    renderLlmFlow([
+      {
+        step: 1,
+        stage: data?.ok ? "backend_tool" : "backend_warning",
+        title: "沙盒演练结果",
+        detail: formatJsonPreview(data),
+      },
+    ]);
+
+    if (data?.ok) {
+      setRunStage("完成", data?.summary || "沙盒演练通过", "done", "done");
+      addBubble("system", `沙盒演练通过。\n${data?.summary || ""}`);
+    } else {
+      const failedNames = steps
+        .filter((step) => !step?.ok)
+        .map((step) => String(step?.name || "").trim())
+        .filter(Boolean);
+      setRunStage("失败", data?.summary || "沙盒演练失败", "parse", "error");
+      addBubble(
+        "system",
+        `沙盒演练失败。\n${data?.summary || ""}${
+          failedNames.length ? `\n失败步骤：${failedNames.join("，")}` : ""
+        }`
+      );
+    }
+  } catch (err) {
+    const msg = `沙盒演练请求失败: ${String(err)}`;
+    renderRunTrace([msg], []);
+    renderAgentPanels([], []);
+    renderLlmFlow([
+      {
+        step: 1,
+        stage: "frontend_error",
+        title: "沙盒演练失败",
+        detail: msg,
+      },
+    ]);
+    setRunStage("失败", "沙盒演练失败，请检查错误信息", "parse", "error");
+    addBubble("system", msg);
+  } finally {
+    state.drilling = false;
+    updateDrillAvailability();
+  }
+}
+
 async function sendMessage() {
   const message = messageInput.value.trim();
   if (!message) return;
@@ -832,6 +983,8 @@ async function sendMessage() {
     );
     const liveTrace = ["客户端已组装请求，等待发送。"];
     const liveToolEvents = [];
+    let liveExecutionPlan = [];
+    let liveAgentPanels = [];
     const liveFlow = [
       {
         step: 1,
@@ -842,6 +995,7 @@ async function sendMessage() {
     ];
     let heartbeatCount = 0;
     renderRunTrace(liveTrace, liveToolEvents);
+    renderAgentPanels([], []);
     renderLlmFlow(liveFlow);
     setRunStage("进行中", "请求已发往后端，等待模型处理", "send", "working");
     const totalAttachmentBytes = state.attachments.reduce((sum, item) => {
@@ -882,6 +1036,12 @@ async function sendMessage() {
         if (!item || typeof item !== "object") return;
         liveToolEvents.push(item);
         renderRunTrace(liveTrace, liveToolEvents);
+      },
+      onAgentState: (payload) => {
+        if (!isForegroundSession()) return;
+        liveExecutionPlan = Array.isArray(payload?.execution_plan) ? payload.execution_plan : liveExecutionPlan;
+        liveAgentPanels = Array.isArray(payload?.panels) ? payload.panels : liveAgentPanels;
+        renderAgentPanels(liveAgentPanels, liveExecutionPlan);
       },
       onHeartbeat: () => {
         if (!isForegroundSession()) return;
@@ -932,6 +1092,7 @@ async function sendMessage() {
       }
 
       renderRunTrace(data.execution_trace || [], data.tool_events || []);
+      renderAgentPanels(data.agent_panels || [], data.execution_plan || []);
       renderLlmFlow(data.debug_flow || []);
       addBubble("assistant", data.text);
     }
@@ -951,6 +1112,7 @@ async function sendMessage() {
     }
     if (isForegroundSession()) {
       renderRunTrace([`请求失败: ${String(err)}`], []);
+      renderAgentPanels([], []);
       renderLlmFlow([
         {
           step: 1,
@@ -1008,6 +1170,10 @@ if (presetCodingBtn) {
   presetCodingBtn.addEventListener("click", () => applyModePreset("coding"));
 }
 
+if (sandboxDrillBtn) {
+  sandboxDrillBtn.addEventListener("click", runSandboxDrill);
+}
+
 messageInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -1056,6 +1222,7 @@ if (deleteSessionBtn) {
 (async function boot() {
   applyModePreset("general", false);
   setRunStage("空闲", "等待发送请求", null, "idle");
+  updateDrillAvailability();
   renderRunPayload(
     {
       session_id: null,
@@ -1066,6 +1233,7 @@ if (deleteSessionBtn) {
     []
   );
   renderRunTrace([], []);
+  renderAgentPanels([], []);
   renderLlmFlow([]);
   try {
     const health = await fetch("/api/health").then((r) => r.json());

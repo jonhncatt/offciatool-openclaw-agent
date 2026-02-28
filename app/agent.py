@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from app.attachments import extract_document_text, image_to_data_url_with_meta, summarize_file_payload
 from app.config import AppConfig
 from app.local_tools import LocalToolExecutor
-from app.models import ChatSettings, ToolEvent
+from app.models import AgentPanel, ChatSettings, ToolEvent
 
 
 _STYLE_HINTS = {
@@ -235,13 +235,24 @@ class OfficeAgent:
         settings: ChatSettings,
         session_id: str | None = None,
         progress_cb: Callable[[dict[str, Any]], None] | None = None,
-    ) -> tuple[str, list[ToolEvent], str, list[str], list[str], list[dict[str, Any]], dict[str, int], str]:
+    ) -> tuple[
+        str,
+        list[ToolEvent],
+        str,
+        list[str],
+        list[str],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, int],
+        str,
+    ]:
         requested_model = settings.model or self.config.default_model
         effective_model = requested_model
         style_hint = _STYLE_HINTS.get(settings.response_style, _STYLE_HINTS["normal"])
         execution_plan = self._build_execution_plan(attachment_metas=attachment_metas, settings=settings)
         execution_trace: list[str] = []
         debug_flow: list[dict[str, Any]] = []
+        agent_panels: list[dict[str, Any]] = []
         usage_total = self._empty_usage()
         allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
         session_tools_hint = (
@@ -282,6 +293,19 @@ class OfficeAgent:
         def add_tool_event(event: ToolEvent) -> None:
             tool_events.append(event)
             emit_progress("tool_event", item=event.model_dump())
+
+        def emit_agent_state() -> None:
+            emit_progress("agent_state", panels=list(agent_panels), execution_plan=list(execution_plan))
+
+        def add_panel(role: str, title: str, summary_text: str, bullets: list[str] | None = None) -> None:
+            panel = AgentPanel(
+                role=role,
+                title=title,
+                summary=self._shorten(summary_text, 500 if not debug_raw else 4000),
+                bullets=self._normalize_string_list(bullets or [], limit=8, item_limit=220),
+            )
+            agent_panels.append(panel.model_dump())
+            emit_agent_state()
 
         messages: list[Any] = [
             self._SystemMessage(
@@ -367,6 +391,42 @@ class OfficeAgent:
         for issue in attachment_issues:
             add_trace(f"附件提示: {issue}")
 
+        planner_brief, planner_raw = self._run_planner(
+            requested_model=requested_model,
+            user_message=user_message,
+            summary=summary,
+            attachment_metas=attachment_metas,
+            settings=settings,
+        )
+        planner_effective_model = str(planner_brief.get("effective_model") or "").strip()
+        if planner_effective_model:
+            effective_model = planner_effective_model
+        usage_total = self._merge_usage(usage_total, planner_brief.get("usage") or self._empty_usage())
+        for note in self._normalize_string_list(planner_brief.get("notes") or [], limit=4, item_limit=200):
+            add_trace(note)
+        add_trace("多 Agent: Planner 已生成目标摘要与执行计划。")
+        add_debug(
+            stage="multi_agent_planner",
+            title="Planner 结果",
+            detail=(
+                f"effective_model={planner_effective_model or requested_model}\n"
+                f"{self._shorten(planner_raw, 4000 if debug_raw else 1200)}"
+            ),
+        )
+        planner_plan = self._normalize_string_list(planner_brief.get("plan") or [], limit=8, item_limit=160)
+        if planner_plan:
+            execution_plan = planner_plan
+        planner_summary = str(planner_brief.get("objective") or "").strip() or "已生成目标摘要。"
+        planner_bullets = (
+            self._normalize_string_list(planner_brief.get("constraints") or [], limit=3, item_limit=180)
+            + self._normalize_string_list(planner_brief.get("plan") or [], limit=4, item_limit=180)
+        )
+        add_panel("planner", "Planner", planner_summary, planner_bullets)
+        planner_system_hint = self._format_planner_system_hint(planner_brief)
+        if planner_system_hint:
+            messages.insert(1, self._SystemMessage(content=planner_system_hint))
+            add_trace("多 Agent: Worker 已加载 Planner 摘要。")
+
         prefetch_payload = self._auto_prefetch_web(user_message, settings.enable_tools)
         if prefetch_payload:
             messages.append(self._SystemMessage(content=prefetch_payload["context"]))
@@ -439,6 +499,7 @@ class OfficeAgent:
                 execution_plan,
                 execution_trace,
                 debug_flow,
+                agent_panels,
                 usage_total,
                 effective_model,
             )
@@ -621,6 +682,7 @@ class OfficeAgent:
                     execution_plan,
                     execution_trace,
                     debug_flow,
+                    agent_panels,
                     usage_total,
                     effective_model,
                 )
@@ -629,6 +691,15 @@ class OfficeAgent:
         if not text.strip():
             text = "模型未返回可见文本。"
         add_trace("已生成最终答复。")
+        worker_bullets = [
+            f"执行环境: {requested_execution_mode}",
+            f"工具调用次数: {len(tool_events)}",
+            f"附件数量: {len(attachment_metas)}",
+            f"历史消息载入: {min(len(history_turns), settings.max_context_turns)}",
+        ]
+        if prefetch_payload:
+            worker_bullets.append(f"自动预搜索: {prefetch_payload.get('count', 0)} 条")
+        add_panel("worker", "Worker", "主执行 Agent 已完成取证、工具调用与作答。", worker_bullets)
         add_debug(
             stage="llm_final",
             title="LLM 最终输出",
@@ -637,7 +708,413 @@ class OfficeAgent:
                 f"text_chars={len(text)}\npreview={self._shorten(text, 1200 if not debug_raw else 50000)}"
             ),
         )
-        return text, tool_events, attachment_note, execution_plan, execution_trace, debug_flow, usage_total, effective_model
+        reviewer_brief, reviewer_raw = self._run_reviewer(
+            requested_model=effective_model or requested_model,
+            user_message=user_message,
+            final_text=text,
+            planner_brief=planner_brief,
+            tool_events=tool_events,
+            execution_trace=execution_trace,
+        )
+        reviewer_effective_model = str(reviewer_brief.get("effective_model") or "").strip()
+        if reviewer_effective_model:
+            effective_model = reviewer_effective_model
+        usage_total = self._merge_usage(usage_total, reviewer_brief.get("usage") or self._empty_usage())
+        for note in self._normalize_string_list(reviewer_brief.get("notes") or [], limit=4, item_limit=200):
+            add_trace(note)
+        reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
+        reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
+        if reviewer_verdict == "needs_attention":
+            add_trace(f"多 Agent: Reviewer 提示需关注，confidence={reviewer_confidence}。")
+        else:
+            add_trace(f"多 Agent: Reviewer 完成审阅，confidence={reviewer_confidence}。")
+        add_debug(
+            stage="multi_agent_reviewer",
+            title="Reviewer 结果",
+            detail=(
+                f"effective_model={reviewer_effective_model or effective_model or requested_model}\n"
+                f"{self._shorten(reviewer_raw, 4000 if debug_raw else 1200)}"
+            ),
+        )
+        reviewer_summary = str(reviewer_brief.get("summary") or "").strip() or "已完成最终答复审阅。"
+        reviewer_bullets = (
+            self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
+            + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
+            + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
+        )
+        add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
+        revision_brief, revision_raw = self._run_revision(
+            requested_model=effective_model or requested_model,
+            user_message=user_message,
+            current_text=text,
+            planner_brief=planner_brief,
+            reviewer_brief=reviewer_brief,
+            tool_events=tool_events,
+        )
+        revision_effective_model = str(revision_brief.get("effective_model") or "").strip()
+        if revision_effective_model:
+            effective_model = revision_effective_model
+        usage_total = self._merge_usage(usage_total, revision_brief.get("usage") or self._empty_usage())
+        for note in self._normalize_string_list(revision_brief.get("notes") or [], limit=4, item_limit=200):
+            add_trace(note)
+        revised_text = str(revision_brief.get("final_answer") or "").strip()
+        revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
+        if revision_changed:
+            text = revised_text
+            add_trace("多 Agent: Revision 已应用到最终答复。")
+        else:
+            add_trace("多 Agent: Revision 未修改最终答复。")
+        add_debug(
+            stage="multi_agent_revision",
+            title="Revision 结果",
+            detail=(
+                f"effective_model={revision_effective_model or effective_model or requested_model}\n"
+                f"{self._shorten(revision_raw, 4000 if debug_raw else 1200)}"
+            ),
+        )
+        revision_summary = str(revision_brief.get("summary") or "").strip() or "已完成最终润色与修订判断。"
+        revision_bullets = self._normalize_string_list(revision_brief.get("key_changes") or [], limit=4, item_limit=180)
+        add_panel("revision", "Revision", revision_summary, revision_bullets)
+        return (
+            text,
+            tool_events,
+            attachment_note,
+            execution_plan,
+            execution_trace,
+            debug_flow,
+            agent_panels,
+            usage_total,
+            effective_model,
+        )
+
+    def _run_planner(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        summary: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+    ) -> tuple[dict[str, Any], str]:
+        fallback = {
+            "objective": self._shorten(user_message.strip(), 220),
+            "constraints": [],
+            "plan": self._build_execution_plan(attachment_metas=attachment_metas, settings=settings),
+            "watchouts": [],
+            "success_signals": [],
+            "usage": self._empty_usage(),
+            "effective_model": requested_model,
+            "notes": [],
+        }
+        attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
+        planner_input = "\n".join(
+            [
+                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"history_summary:\n{summary.strip() or '(none)'}",
+                f"attachments:\n{attachment_summary}",
+                f"response_style={settings.response_style}",
+                f"enable_tools={settings.enable_tools}",
+                f"max_context_turns={settings.max_context_turns}",
+            ]
+        )
+        messages = [
+            self._SystemMessage(
+                content=(
+                    "你是 Planner Agent。你的职责是为 Worker 生成可见的目标摘要和执行计划。"
+                    "不要输出思维链，不要写解释。"
+                    '只返回 JSON 对象，字段固定为 objective, constraints, plan, watchouts, success_signals。'
+                    "每个数组最多 5 条，每条一句话。"
+                )
+            ),
+            self._HumanMessage(content=planner_input),
+        ]
+        try:
+            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=requested_model,
+                max_output_tokens=900,
+                enable_tools=False,
+            )
+            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
+            parsed = self._parse_json_object(raw_text)
+            if not parsed:
+                fallback["notes"] = ["Planner 未返回标准 JSON，已降级为默认执行计划。", *notes]
+                fallback["usage"] = self._extract_usage_from_message(ai_msg)
+                fallback["effective_model"] = effective_model
+                return fallback, raw_text
+
+            planner = {
+                "objective": str(parsed.get("objective") or fallback["objective"]).strip() or fallback["objective"],
+                "constraints": self._normalize_string_list(parsed.get("constraints") or [], limit=5, item_limit=180),
+                "plan": self._normalize_string_list(parsed.get("plan") or fallback["plan"], limit=6, item_limit=180),
+                "watchouts": self._normalize_string_list(parsed.get("watchouts") or [], limit=5, item_limit=180),
+                "success_signals": self._normalize_string_list(
+                    parsed.get("success_signals") or [], limit=4, item_limit=180
+                ),
+                "usage": self._extract_usage_from_message(ai_msg),
+                "effective_model": effective_model,
+                "notes": notes,
+            }
+            return planner, raw_text
+        except Exception as exc:
+            fallback["notes"] = [f"Planner 调用失败，已回退默认计划: {self._shorten(exc, 180)}"]
+            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    def _run_reviewer(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        final_text: str,
+        planner_brief: dict[str, Any],
+        tool_events: list[ToolEvent],
+        execution_trace: list[str],
+    ) -> tuple[dict[str, Any], str]:
+        tool_summaries = [
+            f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
+            for idx, tool in enumerate(tool_events[:10])
+        ]
+        reviewer_input = "\n".join(
+            [
+                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
+                "planner_plan:",
+                *[f"- {item}" for item in self._normalize_string_list(planner_brief.get("plan") or [], limit=6)],
+                "tool_events:",
+                *(tool_summaries or ["(none)"]),
+                "execution_trace_tail:",
+                *[f"- {line}" for line in execution_trace[-8:]],
+                f"final_text:\n{final_text.strip() or '(empty)'}",
+            ]
+        )
+        fallback = {
+            "verdict": "pass",
+            "confidence": "medium",
+            "summary": "Reviewer 未发现阻断性问题。",
+            "strengths": ["已完成基础自检。"],
+            "risks": [],
+            "followups": [],
+            "usage": self._empty_usage(),
+            "effective_model": requested_model,
+            "notes": [],
+        }
+        messages = [
+            self._SystemMessage(
+                content=(
+                    "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
+                    "不要输出思维链。"
+                    '只返回 JSON 对象，字段固定为 verdict, confidence, summary, strengths, risks, followups。'
+                    "verdict 只能是 pass 或 needs_attention；confidence 只能是 high, medium, low。"
+                )
+            ),
+            self._HumanMessage(content=reviewer_input),
+        ]
+        try:
+            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=requested_model,
+                max_output_tokens=900,
+                enable_tools=False,
+            )
+            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
+            parsed = self._parse_json_object(raw_text)
+            if not parsed:
+                fallback["notes"] = ["Reviewer 未返回标准 JSON，已按保守策略记录。", *notes]
+                fallback["usage"] = self._extract_usage_from_message(ai_msg)
+                fallback["effective_model"] = effective_model
+                return fallback, raw_text
+
+            verdict = str(parsed.get("verdict") or "pass").strip().lower()
+            if verdict not in {"pass", "needs_attention"}:
+                verdict = "pass"
+            confidence = str(parsed.get("confidence") or "medium").strip().lower()
+            if confidence not in {"high", "medium", "low"}:
+                confidence = "medium"
+            reviewer = {
+                "verdict": verdict,
+                "confidence": confidence,
+                "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
+                "strengths": self._normalize_string_list(parsed.get("strengths") or [], limit=3, item_limit=180),
+                "risks": self._normalize_string_list(parsed.get("risks") or [], limit=4, item_limit=180),
+                "followups": self._normalize_string_list(parsed.get("followups") or [], limit=3, item_limit=180),
+                "usage": self._extract_usage_from_message(ai_msg),
+                "effective_model": effective_model,
+                "notes": notes,
+            }
+            return reviewer, raw_text
+        except Exception as exc:
+            fallback["notes"] = [f"Reviewer 调用失败，已跳过最终审阅: {self._shorten(exc, 180)}"]
+            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    def _run_revision(
+        self,
+        *,
+        requested_model: str,
+        user_message: str,
+        current_text: str,
+        planner_brief: dict[str, Any],
+        reviewer_brief: dict[str, Any],
+        tool_events: list[ToolEvent],
+    ) -> tuple[dict[str, Any], str]:
+        tool_summaries = [
+            f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
+            for idx, tool in enumerate(tool_events[:8])
+        ]
+        revision_input = "\n".join(
+            [
+                f"user_message:\n{user_message.strip() or '(empty)'}",
+                f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
+                f"reviewer_verdict={str(reviewer_brief.get('verdict') or 'pass').strip()}",
+                f"reviewer_confidence={str(reviewer_brief.get('confidence') or 'medium').strip()}",
+                "reviewer_risks:",
+                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("risks") or [], limit=5)],
+                "reviewer_followups:",
+                *[f"- {item}" for item in self._normalize_string_list(reviewer_brief.get("followups") or [], limit=4)],
+                "tool_events:",
+                *(tool_summaries or ["(none)"]),
+                f"current_answer:\n{current_text.strip() or '(empty)'}",
+            ]
+        )
+        fallback = {
+            "changed": False,
+            "summary": "Revision 未修改最终答复。",
+            "key_changes": [],
+            "final_answer": current_text,
+            "usage": self._empty_usage(),
+            "effective_model": requested_model,
+            "notes": [],
+        }
+        messages = [
+            self._SystemMessage(
+                content=(
+                    "你是 Revision Agent。你负责根据 Reviewer 结论对最终答复做最后一次修订。"
+                    "如果当前答复已经足够好，可以保持原文不变。"
+                    "禁止引入新的未经工具或上下文支持的事实。"
+                    '只返回 JSON 对象，字段固定为 changed, summary, key_changes, final_answer。'
+                    "changed 必须是 true 或 false；key_changes 最多 4 条。"
+                )
+            ),
+            self._HumanMessage(content=revision_input),
+        ]
+        try:
+            ai_msg, _, effective_model, notes = self._invoke_chat_with_runner(
+                messages=messages,
+                model=requested_model,
+                max_output_tokens=1800,
+                enable_tools=False,
+            )
+            raw_text = self._content_to_text(getattr(ai_msg, "content", "")).strip()
+            parsed = self._parse_json_object(raw_text)
+            if not parsed:
+                fallback["notes"] = ["Revision 未返回标准 JSON，已保留原答复。", *notes]
+                fallback["usage"] = self._extract_usage_from_message(ai_msg)
+                fallback["effective_model"] = effective_model
+                return fallback, raw_text
+
+            changed_raw = parsed.get("changed")
+            if isinstance(changed_raw, bool):
+                changed = changed_raw
+            else:
+                changed = str(changed_raw or "").strip().lower() in {"1", "true", "yes", "on"}
+            final_answer = str(parsed.get("final_answer") or current_text).strip() or current_text
+            revision = {
+                "changed": changed and final_answer.strip() != current_text.strip(),
+                "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
+                "key_changes": self._normalize_string_list(parsed.get("key_changes") or [], limit=4, item_limit=180),
+                "final_answer": final_answer,
+                "usage": self._extract_usage_from_message(ai_msg),
+                "effective_model": effective_model,
+                "notes": notes,
+            }
+            return revision, raw_text
+        except Exception as exc:
+            fallback["notes"] = [f"Revision 调用失败，已保留原答复: {self._shorten(exc, 180)}"]
+            return fallback, json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+    def _format_planner_system_hint(self, planner_brief: dict[str, Any]) -> str:
+        objective = str(planner_brief.get("objective") or "").strip()
+        constraints = self._normalize_string_list(planner_brief.get("constraints") or [], limit=5, item_limit=180)
+        plan = self._normalize_string_list(planner_brief.get("plan") or [], limit=6, item_limit=180)
+        watchouts = self._normalize_string_list(planner_brief.get("watchouts") or [], limit=4, item_limit=180)
+        success_signals = self._normalize_string_list(
+            planner_brief.get("success_signals") or [], limit=4, item_limit=180
+        )
+        lines = ["多 Agent 协调摘要（来自 Planner）："]
+        if objective:
+            lines.append(f"目标: {objective}")
+        if constraints:
+            lines.append("关键约束:")
+            lines.extend(f"- {item}" for item in constraints)
+        if plan:
+            lines.append("执行计划:")
+            lines.extend(f"- {item}" for item in plan)
+        if watchouts:
+            lines.append("注意风险:")
+            lines.extend(f"- {item}" for item in watchouts)
+        if success_signals:
+            lines.append("完成信号:")
+            lines.extend(f"- {item}" for item in success_signals)
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _summarize_attachment_metas_for_agents(self, attachment_metas: list[dict[str, Any]]) -> str:
+        if not attachment_metas:
+            return "(none)"
+        lines: list[str] = []
+        for idx, meta in enumerate(attachment_metas[:8], start=1):
+            name = str(meta.get("original_name") or meta.get("name") or f"file_{idx}")
+            kind = str(meta.get("kind") or "other")
+            size = self._format_bytes(meta.get("size"))
+            suffix = str(meta.get("suffix") or "")
+            lines.append(f"{idx}. {name} kind={kind} size={size} suffix={suffix or '-'}")
+        if len(attachment_metas) > 8:
+            lines.append(f"... and {len(attachment_metas) - 8} more")
+        return "\n".join(lines)
+
+    def _normalize_string_list(
+        self,
+        value: Any,
+        *,
+        limit: int = 5,
+        item_limit: int = 180,
+    ) -> list[str]:
+        if isinstance(value, str):
+            raw_items = [value]
+        elif isinstance(value, list):
+            raw_items = value
+        else:
+            raw_items = []
+        out: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if text.startswith("- "):
+                text = text[2:].strip()
+            text = " ".join(text.split())
+            if not text:
+                continue
+            out.append(self._shorten(text, item_limit))
+            if len(out) >= max(1, limit):
+                break
+        return out
+
+    def _parse_json_object(self, raw_text: str) -> dict[str, Any] | None:
+        text = str(raw_text or "").strip()
+        if not text:
+            return None
+        candidates = [text]
+        start = text.find("{")
+        end = text.rfind("}")
+        if 0 <= start < end:
+            candidates.append(text[start : end + 1])
+        for candidate in candidates:
+            try:
+                data = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                return data
+        return None
 
     def _auto_prefetch_web(self, user_message: str, enable_tools: bool) -> dict[str, Any] | None:
         if not enable_tools:
@@ -710,7 +1187,7 @@ class OfficeAgent:
         return "\n".join(lines)[:6000]
 
     def _build_execution_plan(self, attachment_metas: list[dict[str, Any]], settings: ChatSettings) -> list[str]:
-        plan = ["理解你的目标和约束。"]
+        plan = ["Planner 提炼目标、约束与执行计划。", "Worker 根据计划执行与取证。"]
         if attachment_metas:
             plan.append(f"解析附件内容（{len(attachment_metas)} 个）。")
         plan.append(f"结合最近 {settings.max_context_turns} 条历史消息组织上下文。")
@@ -718,7 +1195,7 @@ class OfficeAgent:
             plan.append("如有必要自动连续调用工具（读文件/列目录/执行命令/联网搜索与抓取）获取事实，不逐步征询。")
             if self.config.enable_session_tools:
                 plan.append("涉及历史对话时，自动调用会话工具检索旧 session。")
-        plan.append("汇总结论并按你选择的回答长度输出。")
+        plan.append("Reviewer 做最终自检，Revision 按审阅结果做最后修订。")
         return plan
 
     def _build_llm(self, model: str, max_output_tokens: int, use_responses_api: bool | None = None):
