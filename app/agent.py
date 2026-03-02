@@ -573,16 +573,7 @@ class OfficeAgent:
             "router",
             "Router",
             str(route.get("summary") or "已完成链路分诊。").strip() or "已完成链路分诊。",
-            [
-                f"task_type: {route.get('task_type')}",
-                f"complexity: {route.get('complexity')}",
-                f"source: {route.get('source')}",
-                f"specialists: {', '.join(route.get('specialists') or []) or '(none)'}",
-                f"planner: {str(bool(route.get('use_planner'))).lower()}",
-                f"worker_tools: {str(bool(route.get('use_worker_tools'))).lower()}",
-                f"reviewer: {str(bool(route.get('use_reviewer'))).lower()}",
-                f"revision: {str(bool(route.get('use_revision'))).lower()}",
-            ],
+            self._format_router_panel_bullets(route),
         )
 
         router_system_hint = self._router_system_hint(route)
@@ -2294,6 +2285,21 @@ class OfficeAgent:
             lines.append("完成信号:")
             lines.extend(f"- {item}" for item in success_signals)
         return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _format_router_panel_bullets(self, route: dict[str, Any]) -> list[str]:
+        worker_uses_tools = bool(route.get("use_worker_tools"))
+        return [
+            f"task_type: {route.get('task_type')}",
+            f"complexity: {route.get('complexity')}",
+            f"source: {route.get('source')}",
+            f"specialists: {', '.join(route.get('specialists') or []) or '(none)'}",
+            f"planner_enabled: {str(bool(route.get('use_planner'))).lower()}",
+            "worker_enabled: true",
+            f"worker_mode: {'uses_tools' if worker_uses_tools else 'direct_answer'}",
+            f"reviewer_enabled: {str(bool(route.get('use_reviewer'))).lower()}",
+            f"revision_enabled: {str(bool(route.get('use_revision'))).lower()}",
+            f"structurer_enabled: {str(bool(route.get('use_structurer'))).lower()}",
+        ]
 
     def _normalize_specialists(self, value: Any, *, limit: int = 3) -> list[str]:
         if isinstance(value, str):
