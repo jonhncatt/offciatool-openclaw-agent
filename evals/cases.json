@@ -337,6 +337,43 @@
     }
   },
   {
+    "name": "helper_initial_content_triage_request_detected",
+    "kind": "helper",
+    "helper": "_looks_like_initial_content_triage_request",
+    "args": {
+      "user_message": "帮我看下，下面的内容你能理解吗？\\n<?xml version=\"1.0\" encoding=\"utf-8\"?>\\n<feed><title>Example Feed</title><entry><title>FW timeout</title></entry></feed>"
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_summarizer_fallback_for_initial_triage_is_high_signal",
+    "kind": "helper",
+    "helper": "_specialist_fallback",
+    "args": {
+      "specialist": "summarizer",
+      "requested_model": "gpt-5-mini",
+      "attachment_metas": [],
+      "initial_triage_request": true
+    },
+    "assert": {
+      "contains": {
+        "summary": [
+          "高信息量首次摘要"
+        ],
+        "bullets.0": [
+          "3-5 条具体发现"
+        ],
+        "worker_hint": [
+          "不要把回答停留在能力确认"
+        ]
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_simple_understanding",
     "kind": "helper",
     "helper": "_route_request_by_rules",

@@ -93,6 +93,23 @@ _INLINE_DOC_CODE_FENCE_HINTS = (
     "```atom",
 )
 
+_INITIAL_CONTENT_TRIAGE_HINTS = (
+    "能理解吗",
+    "能看懂吗",
+    "看得懂吗",
+    "能看明白吗",
+    "帮我看下",
+    "帮我看看",
+    "看下下面",
+    "看一下下面",
+    "帮我读一下",
+    "先看看",
+    "先看下",
+    "can you understand",
+    "can you read",
+    "can you make sense",
+)
+
 _SPECIALIST_LABELS = {
     "researcher": "Researcher",
     "file_reader": "FileReader",
@@ -2339,6 +2356,7 @@ class OfficeAgent:
         specialist: str,
         requested_model: str,
         attachment_metas: list[dict[str, Any]],
+        initial_triage_request: bool = False,
     ) -> dict[str, Any]:
         attachment_summary = self._summarize_attachment_metas_for_agents(attachment_metas)
         if specialist == "researcher":
@@ -2370,6 +2388,24 @@ class OfficeAgent:
                 "notes": [],
             }
         if specialist == "summarizer":
+            if initial_triage_request:
+                return {
+                    "role": specialist,
+                    "summary": "先确认内容可读，但主体必须直接给出高信息量首次摘要。",
+                    "bullets": [
+                        "首次回复先给一句结论，再补 3-5 条具体发现。",
+                        "优先提取主题、对象、entry 含义、主要问题、时间线或状态变化。",
+                        "避免停留在“可以理解 XML/Atom 结构”这类能力确认。",
+                    ],
+                    "worker_hint": (
+                        "用户是在确认你能不能理解内容时，也要直接给有帮助的摘要；"
+                        "不要把回答停留在能力确认或流程说明上。"
+                    ),
+                    "queries": [],
+                    "usage": self._empty_usage(),
+                    "effective_model": requested_model,
+                    "notes": [],
+                }
             return {
                 "role": specialist,
                 "summary": "直接围绕用户问题提炼当前内联内容的核心信息。",
@@ -2406,10 +2442,12 @@ class OfficeAgent:
         route: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
         specialist = str(specialist or "").strip().lower()
+        initial_triage_request = self._looks_like_initial_content_triage_request(user_message)
         fallback = self._specialist_fallback(
             specialist=specialist,
             requested_model=requested_model,
             attachment_metas=attachment_metas,
+            initial_triage_request=initial_triage_request,
         )
         if specialist not in _SPECIALIST_LABELS:
             fallback["notes"] = [f"未知专门角色: {specialist}"]
@@ -2452,13 +2490,23 @@ class OfficeAgent:
                 "bullets 最多 4 条，queries 最多 4 条。"
             )
         elif specialist == "summarizer":
+            bullet_limit = 5 if initial_triage_request else 4
             system_prompt = (
                 "你是 Summarizer 专门角色。"
                 "你的职责是为简单理解任务生成内容提炼简报，而不是输出最终答复。"
                 "聚焦：用户真正要的结论、重点信息、回答组织方式。"
                 '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
-                "bullets 最多 4 条；如果不需要 queries，就返回空数组。"
+                f"bullets 最多 {bullet_limit} 条；如果不需要 queries，就返回空数组。"
             )
+            if initial_triage_request:
+                system_prompt += (
+                    "如果用户是在问“你能不能理解/帮我看一下”，"
+                    "不要只回答“可以理解”。"
+                    "你必须引导 Worker 直接给出高信息量首次摘要："
+                    "先一句结论，再给 3 到 5 条具体发现，"
+                    "例如主题、对象、时间、状态变化、异常点、主要问题或记录类型；"
+                    "最后再用一句话说明还能继续从哪些角度深挖。"
+                )
         else:
             system_prompt = (
                 "你是专门角色。"
@@ -2487,13 +2535,33 @@ class OfficeAgent:
             brief = {
                 "role": specialist,
                 "summary": str(parsed.get("summary") or fallback["summary"]).strip() or fallback["summary"],
-                "bullets": self._normalize_string_list(parsed.get("bullets") or fallback["bullets"], limit=4, item_limit=180),
+                "bullets": self._normalize_string_list(
+                    parsed.get("bullets") or fallback["bullets"],
+                    limit=5 if specialist == "summarizer" and initial_triage_request else 4,
+                    item_limit=180,
+                ),
                 "worker_hint": str(parsed.get("worker_hint") or fallback["worker_hint"]).strip() or fallback["worker_hint"],
                 "queries": self._normalize_string_list(parsed.get("queries") or [], limit=4, item_limit=80),
                 "usage": usage,
                 "effective_model": effective_model,
                 "notes": notes,
             }
+            if specialist == "summarizer" and initial_triage_request:
+                brief["bullets"] = self._normalize_string_list(
+                    [
+                        "不要只回答“能理解/可以看懂”。",
+                        "首次回复先给一句结论，再给 3 到 5 条具体发现。",
+                        "优先提取主题、entry 含义、主要问题、时间线或状态变化。",
+                        *self._normalize_string_list(brief.get("bullets") or [], limit=4, item_limit=180),
+                    ],
+                    limit=5,
+                    item_limit=180,
+                )
+                worker_hint = str(brief.get("worker_hint") or "").strip()
+                brief["worker_hint"] = (
+                    "如果用户只是先确认你能不能理解内容，也要直接给高信息量摘要，不要停留在能力确认。"
+                    + (f" {worker_hint}" if worker_hint else "")
+                ).strip()
             return brief, raw_text
         except Exception as exc:
             fallback["notes"] = [f"{_SPECIALIST_LABELS[specialist]} 调用失败，已回退默认简报: {self._shorten(exc, 180)}"]
@@ -2503,7 +2571,7 @@ class OfficeAgent:
         label = _SPECIALIST_LABELS.get(specialist, specialist)
         lines = [f"专门角色摘要（来自 {label}）："]
         summary = str(brief.get("summary") or "").strip()
-        bullets = self._normalize_string_list(brief.get("bullets") or [], limit=4, item_limit=180)
+        bullets = self._normalize_string_list(brief.get("bullets") or [], limit=5, item_limit=180)
         worker_hint = str(brief.get("worker_hint") or "").strip()
         queries = self._normalize_string_list(brief.get("queries") or [], limit=4, item_limit=80)
         if summary:
@@ -3075,6 +3143,18 @@ class OfficeAgent:
         if yaml_key_count >= 5 and len(text) >= 180:
             return True
 
+        return False
+
+    def _looks_like_initial_content_triage_request(self, user_message: str) -> bool:
+        text = str(user_message or "").strip().lower()
+        if not text:
+            return False
+        if any(hint in text for hint in _INITIAL_CONTENT_TRIAGE_HINTS):
+            return True
+        if ("下面" in text or "以下" in text or "below" in text) and (
+            "理解" in text or "看懂" in text or "解释" in text or "understand" in text or "read" in text
+        ):
+            return True
         return False
 
     def _attachment_is_inline_parseable(self, meta: dict[str, Any]) -> bool:
