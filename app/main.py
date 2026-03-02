@@ -154,6 +154,12 @@ def health() -> HealthResponse:
         execution_mode_default=config.execution_mode,
         docker_available=docker_ok,
         docker_message=docker_msg,
+        platform_name=config.platform_name,
+        workspace_root=str(config.workspace_root),
+        allow_any_path=config.allow_any_path,
+        allowed_roots=[str(path) for path in config.allowed_roots],
+        default_extra_allowed_roots=[str(path) for path in config.default_extra_allowed_roots],
+        extra_allowed_roots_source=config.extra_allowed_roots_source,
         web_allow_all_domains=config.web_allow_all_domains,
         web_allowed_domains=config.web_allowed_domains,
     )

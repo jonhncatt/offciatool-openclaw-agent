@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform as py_platform
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,10 @@ def _env(*keys: str, default: str | None = None) -> str | None:
         if key in os.environ:
             return os.environ.get(key)
     return default
+
+
+def _env_is_set(*keys: str) -> bool:
+    return any(key in os.environ for key in keys)
 
 
 def _strip_optional_quotes(value: str) -> str:
@@ -81,6 +86,9 @@ class AppConfig:
     uploads_dir: Path
     token_stats_path: Path
     allowed_roots: list[Path]
+    default_extra_allowed_roots: list[Path]
+    extra_allowed_roots_source: str
+    platform_name: str
     allow_any_path: bool
     web_allowed_domains: list[str]
     web_allow_all_domains: bool
@@ -126,6 +134,76 @@ DEFAULT_SYSTEM_PROMPT = (
     "如果用户提供图片或文档，先提炼关键信息再回答。"
     "当需要读取本地信息时可调用工具；调用前先判断是否必要。"
 )
+
+
+def _parse_xdg_user_dir(raw: str, home: Path) -> Path | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    if "=" in value:
+        _, value = value.split("=", 1)
+        value = value.strip()
+    value = _strip_optional_quotes(value)
+    value = value.replace("$HOME", str(home))
+    if not value:
+        return None
+    return Path(os.path.expandvars(value)).expanduser().resolve()
+
+
+def _load_linux_user_dirs(home: Path) -> dict[str, Path]:
+    config_path = (home / ".config" / "user-dirs.dirs").resolve()
+    if not config_path.is_file():
+        return {}
+
+    mapping: dict[str, Path] = {}
+    try:
+        for raw_line in config_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _ = line.split("=", 1)
+            key = key.strip()
+            if not key.startswith("XDG_"):
+                continue
+            parsed = _parse_xdg_user_dir(line, home)
+            if parsed is not None:
+                mapping[key] = parsed
+    except Exception:
+        return {}
+    return mapping
+
+
+def _default_extra_allowed_roots_for_platform(home: Path) -> tuple[str, list[Path]]:
+    system = (py_platform.system() or "").strip()
+    normalized = system.lower()
+    desktop_dir = (home / "Desktop").resolve()
+    downloads_dir = (home / "Downloads").resolve()
+
+    if normalized == "linux":
+        xdg_dirs = _load_linux_user_dirs(home)
+        desktop_dir = xdg_dirs.get("XDG_DESKTOP_DIR", desktop_dir)
+        downloads_dir = xdg_dirs.get("XDG_DOWNLOAD_DIR", downloads_dir)
+        platform_name = "Linux"
+    elif normalized == "darwin":
+        platform_name = "macOS"
+    elif normalized == "windows":
+        platform_name = "Windows"
+    else:
+        platform_name = system or "Unknown"
+
+    roots = [
+        (desktop_dir / "workbench").resolve(),
+        downloads_dir.resolve(),
+    ]
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(root)
+    return platform_name, deduped
 
 
 def load_config() -> AppConfig:
@@ -215,10 +293,13 @@ def load_config() -> AppConfig:
     allow_any_raw = (_env("OFFICETOOL_ALLOW_ANY_PATH", "OFFCIATOOL_ALLOW_ANY_PATH", default="false") or "false").strip().lower()
     allow_any_path = allow_any_raw in {"1", "true", "yes", "on"}
 
-    default_extra_roots = [
-        str((Path.home() / "Desktop" / "workbench").resolve()),
-        str((Path.home() / "Downloads").resolve()),
-    ]
+    platform_name, default_extra_root_paths = _default_extra_allowed_roots_for_platform(Path.home())
+    default_extra_roots = [str(path) for path in default_extra_root_paths]
+    extra_allowed_roots_source = (
+        "env_override"
+        if _env_is_set("OFFICETOOL_EXTRA_ALLOWED_ROOTS", "OFFCIATOOL_EXTRA_ALLOWED_ROOTS")
+        else "platform_default"
+    )
     extra_allowed_roots_raw = (
         _env(
             "OFFICETOOL_EXTRA_ALLOWED_ROOTS",
@@ -366,6 +447,9 @@ def load_config() -> AppConfig:
         uploads_dir=uploads_dir,
         token_stats_path=token_stats_path,
         allowed_roots=allowed_roots,
+        default_extra_allowed_roots=default_extra_root_paths,
+        extra_allowed_roots_source=extra_allowed_roots_source,
+        platform_name=platform_name,
         allow_any_path=allow_any_path,
         web_allowed_domains=web_allowed_domains,
         web_allow_all_domains=web_allow_all_domains,

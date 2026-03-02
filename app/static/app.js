@@ -32,6 +32,7 @@ const rawDebugInput = document.getElementById("rawDebugInput");
 const presetGeneralBtn = document.getElementById("presetGeneralBtn");
 const presetCodingBtn = document.getElementById("presetCodingBtn");
 const modeStatus = document.getElementById("modeStatus");
+const backendPolicyView = document.getElementById("backendPolicyView");
 const runStageBadge = document.getElementById("runStageBadge");
 const runStageText = document.getElementById("runStageText");
 const runStepList = document.getElementById("runStepList");
@@ -179,6 +180,42 @@ function formatNumberedLines(title, items) {
   if (!Array.isArray(items) || !items.length) return null;
   const lines = items.map((item, idx) => `${idx + 1}. ${item}`);
   return `${title}\n${lines.join("\n")}`;
+}
+
+function renderBackendPolicy(health = {}) {
+  if (!backendPolicyView) return;
+
+  const allowAnyPath = Boolean(health.allow_any_path);
+  const platformName = String(health.platform_name || "Unknown").trim();
+  const workspaceRoot = String(health.workspace_root || "").trim() || "(unknown)";
+  const allowedRoots = Array.isArray(health.allowed_roots) ? health.allowed_roots : [];
+  const defaultExtraRoots = Array.isArray(health.default_extra_allowed_roots) ? health.default_extra_allowed_roots : [];
+  const source = String(health.extra_allowed_roots_source || "platform_default").trim().toLowerCase();
+  const sourceLabel = source === "env_override" ? "环境变量覆盖" : "平台默认";
+
+  const lines = [
+    `平台: ${platformName}`,
+    `路径策略: ${allowAnyPath ? "不限制（ALLOW_ANY_PATH）" : "只允许已配置根目录"}`,
+    `额外根目录来源: ${sourceLabel}`,
+    `工作区根目录: ${workspaceRoot}`,
+    "当前允许读取根目录:",
+  ];
+
+  if (allowedRoots.length) {
+    allowedRoots.forEach((item, idx) => lines.push(`${idx + 1}. ${String(item || "")}`));
+  } else {
+    lines.push("(空)");
+  }
+
+  lines.push("");
+  lines.push("平台默认额外根目录:");
+  if (defaultExtraRoots.length) {
+    defaultExtraRoots.forEach((item, idx) => lines.push(`${idx + 1}. ${String(item || "")}`));
+  } else {
+    lines.push("(空)");
+  }
+
+  backendPolicyView.textContent = lines.join("\n");
 }
 
 function currentSessionKey() {
@@ -1246,6 +1283,7 @@ if (deleteSessionBtn) {
     }
     const backendExecMode = String(health.execution_mode_default || "host").toLowerCase();
     const dockerMsg = String(health.docker_message || "").trim();
+    renderBackendPolicy(health);
     if (execModeInput) {
       execModeInput.value = "";
       const dockerOption = execModeInput.querySelector('option[value="docker"]');
@@ -1263,12 +1301,15 @@ if (deleteSessionBtn) {
       const dockerTip = health.docker_available ? "Docker 可用" : "Docker 未就绪";
       const allowAllWebDomains = Boolean(health.web_allow_all_domains);
       const webDomains = Array.isArray(health.web_allowed_domains) ? health.web_allowed_domains : [];
+      const pathPolicyTip = Boolean(health.allow_any_path)
+        ? "文件路径：不限制（ALLOW_ANY_PATH）"
+        : `文件根目录：${Array.isArray(health.allowed_roots) && health.allowed_roots.length ? health.allowed_roots.join(", ") : "(空)"}`;
       const webPolicyTip = allowAllWebDomains
         ? "联网域名：不限制"
         : `联网域名白名单：${webDomains.length ? webDomains.join(", ") : "(空)"}`;
       addBubble(
         "system",
-        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。\n${webPolicyTip}${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
+        `服务已启动，默认模型：${health.model_default}；默认执行环境：${backendExecMode}（${dockerTip}）。\n${pathPolicyTip}\n${webPolicyTip}${dockerMsg ? `\nDocker: ${dockerMsg}` : ""}`
       );
     }
     await refreshTokenStatsFromServer();

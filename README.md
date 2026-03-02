@@ -136,7 +136,7 @@ cd $HOME\Desktop\officetool
 .\.venv\Scripts\python.exe -c "from app.config import load_config; c=load_config(); print(c.allowed_roots)"
 ```
 
-默认额外可读目录包含 `~/Desktop/workbench` 和 `~/Downloads`。如果你要读别的目录，再通过 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 追加。
+默认额外可读目录按平台推导，目前会包含工作台目录和下载目录（例如 macOS/Windows 常见的 `~/Desktop/workbench`、`~/Downloads`；Linux 会优先读取 XDG user dirs）。如果你要读别的目录，再通过 `OFFICETOOL_EXTRA_ALLOWED_ROOTS` 追加。前端设置栏和 `/api/health` 会显示当前生效的路径策略与允许根目录。
 
 如果助手仍说“只能看当前目录”，先确认：
 
