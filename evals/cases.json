@@ -524,6 +524,36 @@
     }
   },
   {
+    "name": "helper_permission_gate_detects_direct_search_confirmation_prompt",
+    "kind": "helper",
+    "helper": "_looks_like_permission_gate_text",
+    "args": {
+      "text": "在解释这两个函数前，我可以先直接搜索 workbench 文件夹吗？",
+      "has_attachments": false,
+      "request_requires_tools": true
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_permission_gate_detects_absolute_path_prompt",
+    "kind": "helper",
+    "helper": "_looks_like_permission_gate_text",
+    "args": {
+      "text": "请先提供 workbench 的绝对路径，我再继续搜索这两个函数。",
+      "has_attachments": false,
+      "request_requires_tools": true
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
     "name": "helper_successful_local_file_access_detected",
     "kind": "helper",
     "helper": "_has_successful_local_file_access",

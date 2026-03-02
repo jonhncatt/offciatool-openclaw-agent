@@ -480,6 +480,9 @@ class OfficeAgent:
                     "如果用户要求找函数/找文件/搜代码但没有明确给路径，"
                     "默认先在当前工作区根目录 '.' 调用 search_codebase 或 list_directory，不要先索取具体路径；"
                     "只有在你至少完成一次默认搜索后仍无法缩小范围时，才向用户追问路径。\n"
+                    "如果用户给的是相对目录名或允许根目录的别名（例如 workbench），"
+                    "可以直接把该名字作为 list_directory(path=...) 或 search_codebase(root=...) 的参数尝试；"
+                    "不要先要求绝对路径。\n"
                     "当需要对同一文件同时尝试多个关键词时，优先用 multi_query_search；"
                     "大 PDF 首次会建索引缓存，必要时可先调用 doc_index_build 查看 heading/缓存状态；"
                     "大文件优先用 read_text_file(start_char, max_chars) 分块读取；"
@@ -701,6 +704,7 @@ class OfficeAgent:
                         "本轮属于本地搜索/代码定位任务，且用户未提供明确路径。"
                         "请先直接尝试默认搜索：优先在当前工作区根目录 '.' 使用 search_codebase；"
                         "若仍不够，再在允许访问根目录中选择最可能的项目目录继续搜索。"
+                        "如果用户给了目录名（例如 workbench），可以直接把它当成 root/path 尝试。"
                         "不要先向用户索取路径，也不要要求用户提供工具调用格式。"
                     )
                 )
@@ -5087,6 +5091,16 @@ class OfficeAgent:
             "要不要",
             "是否继续",
             "是否要我",
+            "是否直接搜索",
+            "是否直接查",
+            "直接搜索",
+            "直接查",
+            "先直接搜索",
+            "先直接查",
+            "能直接搜索吗",
+            "可以直接搜索吗",
+            "要不要直接搜索",
+            "要不要我直接搜索",
             "你选",
             "请选择",
             "选一个",
@@ -5123,6 +5137,10 @@ class OfficeAgent:
             "工具接口",
             "无法触发",
             "系统不执行写入",
+            "绝对路径",
+            "具体路径",
+            "完整路径",
+            "文件夹路径",
             "请告诉我",
             "你可以告诉我",
             "继续读取吗",
@@ -5163,6 +5181,10 @@ class OfficeAgent:
             "已解析完成",
             "write_text_file",
             "append_text_file",
+            "directly search",
+            "search directly",
+            "absolute path",
+            "full path",
         )
         if not any(p in text for p in patterns):
             return False
@@ -5182,6 +5204,10 @@ class OfficeAgent:
             "文档",
             "path",
             "解析",
+            "搜索",
+            "函数",
+            "目录",
+            "文件夹",
         )
         return any(h in text for h in file_hints)
 
