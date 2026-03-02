@@ -481,6 +481,79 @@
     }
   },
   {
+    "name": "helper_permission_gate_detects_large_file_continue_prompt",
+    "kind": "helper",
+    "helper": "_looks_like_permission_gate_text",
+    "args": {
+      "text": "我已经找到了函数声明，但由于文件太大，还需要继续读取其他部分才能确认完整行为。请回复“同意继续”。",
+      "has_attachments": false,
+      "request_requires_tools": true
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_successful_local_file_access_detected",
+    "kind": "helper",
+    "helper": "_has_successful_local_file_access",
+    "args": {
+      "tool_events": [
+        {
+          "__type": "ToolEvent",
+          "name": "search_codebase",
+          "input": {
+            "query": "target_fn",
+            "root": "/Users/dalizhou/Desktop/new_validation_agent"
+          },
+          "output_preview": "{\"ok\": true, \"query\": \"target_fn\", \"match_count\": 1, \"matches\": [{\"path\": \"/Users/dalizhou/Desktop/new_validation_agent/app/agent.py\", \"line\": 123}]}"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_sanitize_final_answer_strips_false_local_path_denial_after_tool_success",
+    "kind": "helper",
+    "helper": "_sanitize_final_answer_text",
+    "args": {
+      "text": "由于你没有提供可供工具读取的本地文件路径，我无法访问用户本地路径，也无法进行可复核的解析。请回复“同意继续”并提供路径。",
+      "user_message": "去看我授权的文件夹，帮我找 target_fn 函数。",
+      "attachment_metas": [],
+      "tool_events": [
+        {
+          "__type": "ToolEvent",
+          "name": "read_text_file",
+          "input": {
+            "path": "/Users/dalizhou/Desktop/new_validation_agent/app/agent.py",
+            "start_char": 0,
+            "max_chars": 200000
+          },
+          "output_preview": "{\"ok\": true, \"path\": \"/Users/dalizhou/Desktop/new_validation_agent/app/agent.py\", \"length\": 200000, \"start_char\": 0, \"end_char\": 200000, \"truncated\": true, \"has_more\": true}"
+        }
+      ]
+    },
+    "assert": {
+      "contains": {
+        "result": [
+          "不需要你重复提供路径或再次授权"
+        ]
+      },
+      "not_contains": {
+        "result": [
+          "无法访问用户本地路径",
+          "请回复“同意继续”"
+        ]
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_evidence_lookup",
     "kind": "helper",
     "helper": "_route_request_by_rules",

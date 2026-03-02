@@ -1314,6 +1314,7 @@ class OfficeAgent:
             text,
             user_message=user_message,
             attachment_metas=attachment_metas,
+            tool_events=tool_events,
         )
         finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
         if not route.get("use_structurer"):
@@ -1578,6 +1579,7 @@ class OfficeAgent:
             for idx, tool in enumerate(tool_events[:10])
         ]
         validation_context = self._summarize_validation_context(tool_events)
+        local_access_succeeded = self._has_successful_local_file_access(tool_events)
         conflict_lines = [
             f"conflict_has_conflict={str(bool((conflict_brief or {}).get('has_conflict'))).lower()}",
             f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
@@ -1618,30 +1620,39 @@ class OfficeAgent:
             "notes": [],
         }
         readonly_tools = self._reviewer_readonly_tool_names()
+        reviewer_system_prompt = (
+            "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
+            "你的 verdict 必须使用三级结论：pass、warn、block。"
+            "pass = 结论和证据都足够，可以直接放行；"
+            "warn = 核心方向基本正确，但证据表达、引用粒度或措辞需要补强，不应全盘否决；"
+            "block = 证据链明显缺失、独立复核冲突明显、或当前结论高风险到不能直接交付。"
+            "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链时通常应为 block；"
+            "如果已经有命中和相关信息，但缺少页码/章节/命中片段等可复核表达，通常应为 warn，而不是 block。"
+            "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
+            "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase、search_web、fetch_web。"
+            "你还要使用自己的通识和领域知识做冲突检测："
+            "如果最终答复与广为人知的事实、常见协议知识或成熟工程常识明显冲突，"
+            "即使文案表面自洽，也必须标记为 warn 或 block，并在 risks/followups 中明确要求重新取证。"
+            "但你的知识只能用于报警和指出不一致，不能替代工具证据直接宣称文档事实。"
+            "Conflict Detector 只是逻辑/通识报警器，不是最终裁决者。"
+            "如果本轮已经成功使用联网工具获得实时来源，"
+            "不得仅因为“模型原生不支持实时信息”就给出 warn 或 block；"
+            "只有在来源不可靠、抓取 warning 明显、网页正文不足，或你独立复核仍不足时，才可降级。"
+        )
+        if local_access_succeeded:
+            reviewer_system_prompt += (
+                "如果 tool_events 已显示本地文件工具成功访问了目标路径，"
+                "不得再以“无法访问用户本地路径/未提供路径”为理由给出 warn 或 block；"
+                "此时应评估的是证据是否充分，而不是权限是否存在。"
+            )
+        reviewer_system_prompt += (
+            "不要输出思维链。"
+            '只返回 JSON 对象，字段固定为 verdict, confidence, summary, strengths, risks, followups。'
+            "verdict 只能是 pass, warn, block；confidence 只能是 high, medium, low。"
+        )
         messages = [
             self._SystemMessage(
-                content=(
-                    "你是 Reviewer Agent。检查最终答复是否覆盖用户目标、是否基于已有工具证据、是否存在明显遗漏。"
-                    "你的 verdict 必须使用三级结论：pass、warn、block。"
-                    "pass = 结论和证据都足够，可以直接放行；"
-                    "warn = 核心方向基本正确，但证据表达、引用粒度或措辞需要补强，不应全盘否决；"
-                    "block = 证据链明显缺失、独立复核冲突明显、或当前结论高风险到不能直接交付。"
-                    "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链时通常应为 block；"
-                    "如果已经有命中和相关信息，但缺少页码/章节/命中片段等可复核表达，通常应为 warn，而不是 block。"
-                    "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
-                    "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase、search_web、fetch_web。"
-                    "你还要使用自己的通识和领域知识做冲突检测："
-                    "如果最终答复与广为人知的事实、常见协议知识或成熟工程常识明显冲突，"
-                    "即使文案表面自洽，也必须标记为 warn 或 block，并在 risks/followups 中明确要求重新取证。"
-                    "但你的知识只能用于报警和指出不一致，不能替代工具证据直接宣称文档事实。"
-                    "Conflict Detector 只是逻辑/通识报警器，不是最终裁决者。"
-                    "如果本轮已经成功使用联网工具获得实时来源，"
-                    "不得仅因为“模型原生不支持实时信息”就给出 warn 或 block；"
-                    "只有在来源不可靠、抓取 warning 明显、网页正文不足，或你独立复核仍不足时，才可降级。"
-                    "不要输出思维链。"
-                    '只返回 JSON 对象，字段固定为 verdict, confidence, summary, strengths, risks, followups。'
-                    "verdict 只能是 pass, warn, block；confidence 只能是 high, medium, low。"
-                )
+                content=reviewer_system_prompt
             ),
             self._HumanMessage(content=reviewer_input),
         ]
@@ -1816,6 +1827,7 @@ class OfficeAgent:
         conflict_brief: dict[str, Any] | None = None,
         evidence_required_mode: bool = False,
     ) -> tuple[dict[str, Any], str]:
+        local_access_succeeded = self._has_successful_local_file_access(tool_events)
         tool_summaries = [
             f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
             for idx, tool in enumerate(tool_events[:8])
@@ -1855,26 +1867,34 @@ class OfficeAgent:
             "effective_model": requested_model,
             "notes": [],
         }
+        revision_system_prompt = (
+            "你是 Revision Agent。你负责根据 Reviewer 结论对最终答复做最后一次修订。"
+            "如果 reviewer_verdict=pass，通常保持原文或只做极小润色。"
+            "如果 reviewer_verdict=warn，优先保留 Worker 已经找到的核心信息，补上页码/章节/命中片段/限定语，"
+            "不要因为证据表达不完整就整段推翻。"
+            "如果 reviewer_verdict=block，才应把最终答复改成更保守或更明确要求继续取证的版本。"
+            "如果当前答复已经足够好，可以保持原文不变。"
+            "禁止引入新的未经工具或上下文支持的事实。"
+            "最终输出绝不能暴露内部控制变量或流程字段，"
+            "例如 reviewer_verdict、reviewer_confidence、evidence_required_mode、task_mode。"
+            "如果 Reviewer 指出与通识或领域知识存在明显冲突，而工具证据又不足，"
+            "你应把最终答复改成更保守的表述，例如说明当前证据不足、需要继续核对原文，"
+            "而不是继续维持一个可疑的确定性结论。"
+            "如果 evidence_required_mode=true，而当前答案缺少路径、页码、章节、行号、表格或命中片段证据，"
+            "你应优先把最终答复改成证据优先的保守版本。"
+        )
+        if local_access_succeeded:
+            revision_system_prompt += (
+                "如果 tool_events 已显示本地文件工具成功访问了目标路径，"
+                "禁止把最终答复改写成“无法访问用户本地路径”“请重新提供路径”或类似权限拒绝。"
+            )
+        revision_system_prompt += (
+            '只返回 JSON 对象，字段固定为 changed, summary, key_changes, final_answer。'
+            "changed 必须是 true 或 false；key_changes 最多 4 条。"
+        )
         messages = [
             self._SystemMessage(
-                content=(
-                    "你是 Revision Agent。你负责根据 Reviewer 结论对最终答复做最后一次修订。"
-                    "如果 reviewer_verdict=pass，通常保持原文或只做极小润色。"
-                    "如果 reviewer_verdict=warn，优先保留 Worker 已经找到的核心信息，补上页码/章节/命中片段/限定语，"
-                    "不要因为证据表达不完整就整段推翻。"
-                    "如果 reviewer_verdict=block，才应把最终答复改成更保守或更明确要求继续取证的版本。"
-                    "如果当前答复已经足够好，可以保持原文不变。"
-                    "禁止引入新的未经工具或上下文支持的事实。"
-                    "最终输出绝不能暴露内部控制变量或流程字段，"
-                    "例如 reviewer_verdict、reviewer_confidence、evidence_required_mode、task_mode。"
-                    "如果 Reviewer 指出与通识或领域知识存在明显冲突，而工具证据又不足，"
-                    "你应把最终答复改成更保守的表述，例如说明当前证据不足、需要继续核对原文，"
-                    "而不是继续维持一个可疑的确定性结论。"
-                    "如果 evidence_required_mode=true，而当前答案缺少路径、页码、章节、行号、表格或命中片段证据，"
-                    "你应优先把最终答复改成证据优先的保守版本。"
-                    '只返回 JSON 对象，字段固定为 changed, summary, key_changes, final_answer。'
-                    "changed 必须是 true 或 false；key_changes 最多 4 条。"
-                )
+                content=revision_system_prompt
             ),
             self._HumanMessage(content=revision_input),
         ]
@@ -1919,14 +1939,22 @@ class OfficeAgent:
         *,
         user_message: str,
         attachment_metas: list[dict[str, Any]],
+        tool_events: list[ToolEvent] | None = None,
     ) -> str:
         original = str(text or "").strip()
         if not original:
             return original
 
         cleaned = original
+        local_access_succeeded = self._has_successful_local_file_access(tool_events or [])
         had_internal_meta = bool(
             re.search(r"(?i)\b(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)\b", original)
+        )
+        had_path_denial = self._looks_like_local_path_denial(original)
+        had_permission_gate = self._looks_like_permission_gate_text(
+            original,
+            has_attachments=bool(attachment_metas),
+            request_requires_tools=local_access_succeeded,
         )
         cleaned = re.sub(r"(?im)^.*\b(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)\b.*$", "", cleaned)
         cleaned = re.sub(
@@ -1940,10 +1968,19 @@ class OfficeAgent:
             cleaned = re.sub(r"(?is)[^。；\n]*无法进行可复核的解析[^。；\n]*[。；]?", "", cleaned)
             cleaned = re.sub(r"(?is)[^。；\n]*请(?:提供|给出|上传).{0,40}路径[^。；\n]*[。；]?", "", cleaned)
 
+        if local_access_succeeded:
+            cleaned = re.sub(r"(?is)[^。；\n]*(?:无法访问用户本地路径|无法访问本地路径|无法读取用户本地路径)[^。；\n]*[。；]?", "", cleaned)
+            cleaned = re.sub(r"(?is)[^。；\n]*(?:没有提供可供工具读取|未提供可供工具读取|没有提供本地文件路径|未提供本地文件路径)[^。；\n]*[。；]?", "", cleaned)
+            cleaned = re.sub(r"(?is)[^。；\n]*无法进行可复核的解析[^。；\n]*[。；]?", "", cleaned)
+            cleaned = re.sub(r"(?is)[^。；\n]*请(?:提供|给出|补充).{0,50}路径[^。；\n]*[。；]?", "", cleaned)
+            cleaned = re.sub(r"(?is)[^。；\n]*(?:回复.?同意继续|请回复.?同意继续|需要你同意继续|需要你回复同意继续|同意继续后)[^。；\n]*[。；]?", "", cleaned)
+
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         if not cleaned:
             if not attachment_metas and self._looks_like_inline_document_payload(user_message) and had_internal_meta:
                 return "已按你直接粘贴的原始文本内容理解，不需要额外提供本地文件路径。请继续指定你要我解释的结构、字段或结论。"
+            if local_access_succeeded and (had_path_denial or had_permission_gate or had_internal_meta):
+                return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
             return original
         return cleaned
 
@@ -2686,6 +2723,48 @@ class OfficeAgent:
             "web_tool_notes": self._normalize_string_list(notes, limit=6, item_limit=180),
             "web_tool_warnings": self._normalize_string_list(warnings, limit=4, item_limit=180),
         }
+
+    def _has_successful_local_file_access(self, tool_events: list[ToolEvent]) -> bool:
+        local_file_tools = {
+            "list_directory",
+            "read_text_file",
+            "search_text_in_file",
+            "multi_query_search",
+            "doc_index_build",
+            "read_section_by_heading",
+            "table_extract",
+            "fact_check_file",
+            "search_codebase",
+            "extract_zip",
+            "extract_msg_attachments",
+        }
+        for event in tool_events:
+            name = str(event.name or "").strip()
+            if name not in local_file_tools:
+                continue
+            if self._tool_event_ok(event) is True:
+                return True
+        return False
+
+    def _looks_like_local_path_denial(self, text: str) -> bool:
+        raw = str(text or "").strip().lower()
+        if not raw:
+            return False
+        patterns = (
+            "无法访问用户本地路径",
+            "无法访问本地路径",
+            "无法读取用户本地路径",
+            "没有提供可供工具读取",
+            "未提供可供工具读取",
+            "没有提供本地文件路径",
+            "未提供本地文件路径",
+            "请提供路径",
+            "请给出路径",
+            "必须提供路径",
+            "需要本地文件路径",
+            "无法进行可复核的解析",
+        )
+        return any(pattern in raw for pattern in patterns)
 
     def _conflict_is_realtime_capability_warning(self, conflict_brief: dict[str, Any] | None) -> bool:
         lines = [
@@ -4783,13 +4862,14 @@ class OfficeAgent:
             return True
         return any(hint in text for hint in _NEWS_HINTS)
 
-    def _looks_like_permission_gate(
+    def _looks_like_permission_gate_text(
         self,
-        ai_msg: Any,
+        text: str,
+        *,
         has_attachments: bool = False,
         request_requires_tools: bool = False,
     ) -> bool:
-        text = self._content_to_text(getattr(ai_msg, "content", "")).strip().lower()
+        text = str(text or "").strip().lower()
         if not text:
             return False
         if len(text) > 5000:
@@ -4834,6 +4914,11 @@ class OfficeAgent:
             "如您同意",
             "若您同意",
             "同意的话",
+            "同意继续",
+            "回复同意继续",
+            "回复“同意继续”",
+            "回复'同意继续'",
+            "授权继续",
         )
         if not request_requires_tools and not has_attachments:
             return any(p in text for p in general_gate_patterns)
@@ -4853,14 +4938,25 @@ class OfficeAgent:
             "你可以告诉我",
             "继续读取吗",
             "继续读吗",
+            "继续读取其他部分",
+            "继续查看其他部分",
+            "需要继续读取",
+            "需要继续读",
+            "需要读取其他部分",
+            "需要读其他部分",
             "怕太大",
             "太大",
+            "文件太大",
+            "内容太大",
             "最终确认",
             "确认句",
             "无需你回答",
             "不执行写入",
             "触发工具调用",
             "必须包含路径",
+            "需要你同意",
+            "需要你的同意",
+            "需要你回复同意继续",
             "need your confirmation",
             "do you want me to continue",
             "should i continue",
@@ -4899,6 +4995,19 @@ class OfficeAgent:
             "解析",
         )
         return any(h in text for h in file_hints)
+
+    def _looks_like_permission_gate(
+        self,
+        ai_msg: Any,
+        has_attachments: bool = False,
+        request_requires_tools: bool = False,
+    ) -> bool:
+        text = self._content_to_text(getattr(ai_msg, "content", ""))
+        return self._looks_like_permission_gate_text(
+            text,
+            has_attachments=has_attachments,
+            request_requires_tools=request_requires_tools,
+        )
 
     def _summarize_message_roles(self, messages: list[Any]) -> str:
         counts: dict[str, int] = {}
