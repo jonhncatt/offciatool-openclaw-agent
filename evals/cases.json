@@ -145,6 +145,66 @@
     }
   },
   {
+    "name": "helper_validation_context_web_tools_success",
+    "kind": "helper",
+    "helper": "_summarize_validation_context",
+    "args": {
+      "tool_events": [
+        {
+          "__type": "ToolEvent",
+          "name": "search_web",
+          "input": {
+            "query": "latest openai news"
+          },
+          "output_preview": "{\"ok\": true, \"query\": \"latest openai news\", \"engine\": \"duckduckgo_html\", \"count\": 3}"
+        },
+        {
+          "__type": "ToolEvent",
+          "name": "fetch_web",
+          "input": {
+            "url": "https://example.com/story"
+          },
+          "output_preview": "{\"ok\": true, \"url\": \"https://example.com/story\", \"source_format\": \"html_text_extracted\", \"length\": 1200}"
+        }
+      ]
+    },
+    "assert": {
+      "equals": {
+        "web_tools_used": true,
+        "web_tools_success": true
+      },
+      "contains_any": {
+        "web_tool_notes.0": [
+          "search_web",
+          "fetch_web"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_reviewer_realtime_conflict_downgrade",
+    "kind": "helper",
+    "helper": "_normalize_reviewer_verdict",
+    "args": {
+      "raw_verdict": "block",
+      "risks": [],
+      "followups": [],
+      "spec_lookup_request": false,
+      "evidence_required_mode": false,
+      "readonly_checks": [
+        "search_web"
+      ],
+      "conflict_has_conflict": true,
+      "conflict_realtime_only": true,
+      "web_tools_success": true
+    },
+    "assert": {
+      "equals": {
+        "result": "warn"
+      }
+    }
+  },
+  {
     "name": "tool_table_extract_xlsx",
     "kind": "tool",
     "tool": "table_extract",

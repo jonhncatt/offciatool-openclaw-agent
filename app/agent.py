@@ -900,6 +900,8 @@ class OfficeAgent:
             [
                 f"requested_model={effective_model or requested_model}",
                 f"evidence_required_mode={evidence_required_mode}",
+                f"web_tools_used={str(self._summarize_validation_context(tool_events)['web_tools_used']).lower()}",
+                f"web_tools_success={str(self._summarize_validation_context(tool_events)['web_tools_success']).lower()}",
                 f"draft_chars={len(text)}",
                 f"draft_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
             ]
@@ -914,6 +916,7 @@ class OfficeAgent:
             user_message=user_message,
             final_text=text,
             planner_brief=planner_brief,
+            tool_events=tool_events,
             spec_lookup_request=spec_lookup_request,
             evidence_required_mode=evidence_required_mode,
         )
@@ -1146,15 +1149,23 @@ class OfficeAgent:
         user_message: str,
         final_text: str,
         planner_brief: dict[str, Any],
+        tool_events: list[ToolEvent],
         spec_lookup_request: bool = False,
         evidence_required_mode: bool = False,
     ) -> tuple[dict[str, Any], str]:
+        validation_context = self._summarize_validation_context(tool_events)
         detector_input = "\n".join(
             [
                 f"user_message:\n{user_message.strip() or '(empty)'}",
                 f"planner_objective:\n{str(planner_brief.get('objective') or '').strip() or '(none)'}",
                 f"spec_lookup_request={str(spec_lookup_request).lower()}",
                 f"evidence_required_mode={str(evidence_required_mode).lower()}",
+                f"web_tools_used={str(validation_context['web_tools_used']).lower()}",
+                f"web_tools_success={str(validation_context['web_tools_success']).lower()}",
+                "web_tool_notes:",
+                *[f"- {item}" for item in validation_context["web_tool_notes"]],
+                "web_tool_warnings:",
+                *[f"- {item}" for item in validation_context["web_tool_warnings"]],
                 f"answer:\n{final_text.strip() or '(empty)'}",
             ]
         )
@@ -1175,6 +1186,10 @@ class OfficeAgent:
                     "基于通识、成熟工程知识和任务上下文，检查当前答案是否存在明显可疑点、过度确定、或与常见知识冲突。"
                     "不要输出思维链。"
                     "你的知识只能用于报警和建议复核，不能替代文件证据。"
+                    "必须区分底层模型限制与工具增强后的系统能力。"
+                    "如果本轮已经成功使用 search_web、fetch_web 或 download_web_file 获得实时来源，"
+                    "不能仅因为“模型原生不支持实时信息”就判定答案冲突；"
+                    "这类情况最多只能提醒来源质量、时效性或复核范围。"
                     '只返回 JSON 对象，字段固定为 has_conflict, confidence, summary, concerns, suggested_checks。'
                     "has_conflict 必须是 true 或 false；confidence 只能是 high, medium, low。"
                 )
@@ -1240,6 +1255,7 @@ class OfficeAgent:
             f"{idx + 1}. {tool.name}({json.dumps(tool.input or {}, ensure_ascii=False)})"
             for idx, tool in enumerate(tool_events[:10])
         ]
+        validation_context = self._summarize_validation_context(tool_events)
         conflict_lines = [
             f"conflict_has_conflict={str(bool((conflict_brief or {}).get('has_conflict'))).lower()}",
             f"conflict_summary={str((conflict_brief or {}).get('summary') or '').strip() or '(none)'}",
@@ -1254,6 +1270,12 @@ class OfficeAgent:
                 *[f"- {item}" for item in self._normalize_string_list(planner_brief.get("plan") or [], limit=6)],
                 f"task_mode={'spec_lookup' if spec_lookup_request else 'general'}",
                 f"evidence_required_mode={str(evidence_required_mode).lower()}",
+                f"web_tools_used={str(validation_context['web_tools_used']).lower()}",
+                f"web_tools_success={str(validation_context['web_tools_success']).lower()}",
+                "web_tool_notes:",
+                *[f"- {item}" for item in validation_context["web_tool_notes"]],
+                "web_tool_warnings:",
+                *[f"- {item}" for item in validation_context["web_tool_warnings"]],
                 *conflict_lines,
                 "tool_events:",
                 *(tool_summaries or ["(none)"]),
@@ -1285,11 +1307,15 @@ class OfficeAgent:
                     "如果任务是 spec_lookup，那么没有 search_text_in_file + read_text_file 的取证链时通常应为 block；"
                     "如果已经有命中和相关信息，但缺少页码/章节/命中片段等可复核表达，通常应为 warn，而不是 block。"
                     "如果 evidence_required_mode=true，那么你必须优先使用只读工具做独立复核。"
-                    "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase。"
+                    "优先考虑 fact_check_file、read_section_by_heading、search_text_in_file、table_extract、search_codebase、search_web、fetch_web。"
                     "你还要使用自己的通识和领域知识做冲突检测："
                     "如果最终答复与广为人知的事实、常见协议知识或成熟工程常识明显冲突，"
                     "即使文案表面自洽，也必须标记为 warn 或 block，并在 risks/followups 中明确要求重新取证。"
                     "但你的知识只能用于报警和指出不一致，不能替代工具证据直接宣称文档事实。"
+                    "Conflict Detector 只是逻辑/通识报警器，不是最终裁决者。"
+                    "如果本轮已经成功使用联网工具获得实时来源，"
+                    "不得仅因为“模型原生不支持实时信息”就给出 warn 或 block；"
+                    "只有在来源不可靠、抓取 warning 明显、网页正文不足，或你独立复核仍不足时，才可降级。"
                     "不要输出思维链。"
                     '只返回 JSON 对象，字段固定为 verdict, confidence, summary, strengths, risks, followups。'
                     "verdict 只能是 pass, warn, block；confidence 只能是 high, medium, low。"
@@ -1324,6 +1350,7 @@ class OfficeAgent:
                                     "请先完成独立复核，再输出 JSON。"
                                     "优先调用 fact_check_file；若需要精读文档章节，调用 read_section_by_heading 或 search_text_in_file。"
                                     "如果是代码任务，优先调用 search_codebase。"
+                                    "如果涉及实时信息、新闻、网页来源或联网事实，优先调用 search_web 和 fetch_web。"
                                 )
                             )
                         )
@@ -1431,6 +1458,8 @@ class OfficeAgent:
                 evidence_required_mode=evidence_required_mode,
                 readonly_checks=reviewer_tool_names,
                 conflict_has_conflict=bool((conflict_brief or {}).get("has_conflict")),
+                conflict_realtime_only=self._conflict_is_realtime_capability_warning(conflict_brief),
+                web_tools_success=bool(validation_context["web_tools_success"]),
             )
             confidence = str(parsed.get("confidence") or "medium").strip().lower()
             if confidence not in {"high", "medium", "low"}:
@@ -1598,6 +1627,116 @@ class OfficeAgent:
         if len(attachment_metas) > 8:
             lines.append(f"... and {len(attachment_metas) - 8} more")
         return "\n".join(lines)
+
+    def _parse_tool_event_preview(self, event: ToolEvent) -> dict[str, Any] | None:
+        raw = str(event.output_preview or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _tool_event_ok(self, event: ToolEvent) -> bool | None:
+        parsed = self._parse_tool_event_preview(event)
+        if isinstance(parsed, dict) and "ok" in parsed:
+            return bool(parsed.get("ok"))
+        preview = str(event.output_preview or "").lower()
+        if '"ok": true' in preview:
+            return True
+        if '"ok": false' in preview:
+            return False
+        return None
+
+    def _summarize_validation_context(self, tool_events: list[ToolEvent]) -> dict[str, Any]:
+        web_tool_prefixes = ("search_web", "fetch_web", "download_web_file")
+        notes: list[str] = []
+        warnings: list[str] = []
+        used = False
+        success = False
+
+        for event in tool_events:
+            base_name = str(event.name or "").strip()
+            if not base_name.startswith(web_tool_prefixes):
+                continue
+            used = True
+            ok_flag = self._tool_event_ok(event)
+            parsed = self._parse_tool_event_preview(event) or {}
+            if ok_flag is True:
+                success = True
+
+            detail = base_name
+            if base_name.startswith("search_web"):
+                query = str((event.input or {}).get("query") or parsed.get("query") or "").strip()
+                count = int(parsed.get("count") or 0)
+                engine = str(parsed.get("engine") or "").strip()
+                parts = [detail]
+                if query:
+                    parts.append(f"query={self._shorten(query, 60)}")
+                if count:
+                    parts.append(f"count={count}")
+                if engine:
+                    parts.append(f"engine={engine}")
+                detail = ", ".join(parts)
+            elif base_name == "fetch_web":
+                url = str((event.input or {}).get("url") or parsed.get("url") or "").strip()
+                source_format = str(parsed.get("source_format") or parsed.get("content_type") or "").strip()
+                parts = [detail]
+                if url:
+                    parts.append(f"url={self._shorten(url, 80)}")
+                if source_format:
+                    parts.append(f"format={source_format}")
+                detail = ", ".join(parts)
+            elif base_name == "download_web_file":
+                url = str((event.input or {}).get("url") or parsed.get("url") or "").strip()
+                path = str(parsed.get("path") or "").strip()
+                parts = [detail]
+                if url:
+                    parts.append(f"url={self._shorten(url, 80)}")
+                if path:
+                    parts.append(f"path={self._shorten(path, 80)}")
+                detail = ", ".join(parts)
+
+            if ok_flag is True:
+                detail += " [ok]"
+            elif ok_flag is False:
+                detail += " [failed]"
+            notes.append(detail)
+
+            warning = str(parsed.get("warning") or "").strip()
+            if warning:
+                warnings.append(f"{base_name}: {self._shorten(warning, 160)}")
+
+        return {
+            "web_tools_used": used,
+            "web_tools_success": success,
+            "web_tool_notes": self._normalize_string_list(notes, limit=6, item_limit=180),
+            "web_tool_warnings": self._normalize_string_list(warnings, limit=4, item_limit=180),
+        }
+
+    def _conflict_is_realtime_capability_warning(self, conflict_brief: dict[str, Any] | None) -> bool:
+        lines = [
+            str((conflict_brief or {}).get("summary") or "").strip(),
+            *self._normalize_string_list((conflict_brief or {}).get("concerns") or [], limit=4, item_limit=200),
+        ]
+        text = " ".join(item.lower() for item in lines if item).strip()
+        if not text:
+            return False
+        realtime_markers = ("实时", "实时信息", "latest", "real-time", "realtime", "up-to-date", "最新")
+        model_limit_markers = (
+            "模型",
+            "model",
+            "原生",
+            "natively",
+            "本身不支持",
+            "does not support",
+            "cannot access",
+            "无法访问",
+        )
+        return any(marker in text for marker in realtime_markers) and any(
+            marker in text for marker in model_limit_markers
+        )
 
     def _normalize_string_list(
         self,
@@ -2103,6 +2242,8 @@ class OfficeAgent:
             "table_extract",
             "fact_check_file",
             "search_codebase",
+            "search_web",
+            "fetch_web",
         ]
 
     def _normalize_reviewer_verdict(
@@ -2115,19 +2256,25 @@ class OfficeAgent:
         evidence_required_mode: bool,
         readonly_checks: list[str],
         conflict_has_conflict: bool,
+        conflict_realtime_only: bool,
+        web_tools_success: bool,
     ) -> str:
         verdict = str(raw_verdict or "pass").strip().lower()
         if verdict == "needs_attention":
-            if conflict_has_conflict or (spec_lookup_request and "search_text_in_file" not in set(readonly_checks)):
+            if (conflict_has_conflict and not (conflict_realtime_only and web_tools_success)) or (
+                spec_lookup_request and "search_text_in_file" not in set(readonly_checks)
+            ):
                 return "block"
             return "warn"
         if verdict in {"pass", "warn", "block"}:
+            if verdict == "block" and conflict_realtime_only and web_tools_success:
+                return "warn"
             return verdict
 
         has_risks = bool(self._normalize_string_list(risks or [], limit=4, item_limit=180))
         has_followups = bool(self._normalize_string_list(followups or [], limit=4, item_limit=180))
         readonly_set = set(readonly_checks)
-        if conflict_has_conflict:
+        if conflict_has_conflict and not (conflict_realtime_only and web_tools_success):
             return "block"
         if spec_lookup_request and "search_text_in_file" not in readonly_set:
             return "block"
@@ -2203,6 +2350,27 @@ class OfficeAgent:
             if path:
                 return f"search_codebase matches={match_count}, first={path}:{line or '?'}"
             return f"search_codebase matches={match_count}"
+
+        if name == "search_web":
+            query = str(result.get("query") or "").strip() or "(empty)"
+            count = int(result.get("count") or 0)
+            engine = str(result.get("engine") or "unknown").strip() or "unknown"
+            rows = list(result.get("results") or [])
+            first = rows[0] if rows else {}
+            first_title = self._shorten(first.get("title") or "", 60) if isinstance(first, dict) else ""
+            return f"search_web query={query}, count={count}, engine={engine}, first={first_title or '(none)'}"
+
+        if name == "fetch_web":
+            url = str(result.get("url") or "").strip() or "(empty)"
+            source_format = str(result.get("source_format") or result.get("content_type") or "unknown").strip()
+            length = int(result.get("length") or 0)
+            warning = self._shorten(result.get("warning") or "", 80)
+            if warning:
+                return (
+                    f"fetch_web url={self._shorten(url, 80)}, format={source_format or 'unknown'}, "
+                    f"length={length}, warning={warning}"
+                )
+            return f"fetch_web url={self._shorten(url, 80)}, format={source_format or 'unknown'}, length={length}"
 
         if name == "read_text_file":
             path = str(result.get("path") or "").strip()

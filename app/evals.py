@@ -8,7 +8,7 @@ from typing import Any
 
 from app.agent import OfficeAgent
 from app.config import load_config
-from app.models import ChatSettings
+from app.models import ChatSettings, ToolEvent
 from app.storage import now_iso
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -158,10 +158,37 @@ def _attachment_meta(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _helper_arg(value: Any) -> Any:
+    if isinstance(value, dict):
+        marker = str(value.get("__type") or "").strip()
+        if marker == "ToolEvent":
+            return ToolEvent(
+                name=str(value.get("name") or ""),
+                input=value.get("input") if isinstance(value.get("input"), dict) else None,
+                output_preview=str(value.get("output_preview") or ""),
+            )
+        return {key: _helper_arg(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_helper_arg(item) for item in value]
+    return value
+
+
 def _run_tool_case(case: dict[str, Any], executor: Any) -> dict[str, Any]:
     tool_name = str(case["tool"])
     args = _resolve_value(case.get("args") or {})
     fn = getattr(executor, tool_name)
+    started = time.perf_counter()
+    result = fn(**args)
+    elapsed_sec = time.perf_counter() - started
+    payload = result if isinstance(result, dict) else {"result": result}
+    payload["elapsed_sec"] = round(elapsed_sec, 3)
+    return payload
+
+
+def _run_helper_case(case: dict[str, Any], agent: OfficeAgent) -> dict[str, Any]:
+    helper_name = str(case["helper"])
+    args = _helper_arg(_resolve_value(case.get("args") or {}))
+    fn = getattr(agent, helper_name)
     started = time.perf_counter()
     result = fn(**args)
     elapsed_sec = time.perf_counter() - started
@@ -246,7 +273,12 @@ def run_regression_evals(
         _prepare_case(case)
         kind = str(case.get("kind") or "tool")
         try:
-            payload = _run_tool_case(case, tools) if kind == "tool" else _run_agent_case(case, agent)
+            if kind == "tool":
+                payload = _run_tool_case(case, tools)
+            elif kind == "helper":
+                payload = _run_helper_case(case, agent)
+            else:
+                payload = _run_agent_case(case, agent)
             errors = _assertions(payload, case.get("assert") or {})
             if errors:
                 results.append({"name": name, "kind": kind, "status": "failed", "errors": errors, "payload": payload})
