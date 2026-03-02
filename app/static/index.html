@@ -124,6 +124,32 @@
             <pre id="runTraceView" class="runtime-pre">暂无执行轨迹</pre>
           </details>
           <details class="runtime-details">
+            <summary>多 Agent 图例</summary>
+            <pre class="runtime-pre">阶段 3 状态: MVP 已完成
+
+固定角色:
+Router -> Worker
+
+按需角色:
+Router -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Worker -> [Conflict Detector?] -> [Reviewer?] -> [Revision?] -> [Structurer?]
+
+说明:
+- [?] = 由 Router 决定是否启用
+- Worker 一定存在
+- worker_mode=direct_answer: Worker 直接回答
+- worker_mode=uses_tools: Worker 会调用工具链
+
+常见路径:
+1. 简单理解
+   Router -> Summarizer -> Worker
+
+2. 联网查证
+   Router -> Researcher -> Planner -> Worker(tools) -> Reviewer -> Revision? -> Structurer
+
+3. 文档定位
+   Router -> FileReader -> Planner -> Worker(tools) -> Reviewer -> Structurer</pre>
+          </details>
+          <details class="runtime-details">
             <summary>多 Agent 透明层</summary>
             <pre id="runAgentPanelsView" class="runtime-pre">暂无多 Agent 摘要</pre>
           </details>
