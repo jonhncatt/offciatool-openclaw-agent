@@ -670,6 +670,7 @@ class OfficeAgent:
         add_trace(f"已载入最近 {min(len(history_turns), settings.max_context_turns)} 条历史消息。")
 
         followup_topic_hint = self._build_followup_topic_hint(user_message=user_message, history_turns=history_turns)
+        followup_has_attachments = bool(history_turns) and bool(attachment_metas)
         followup_attachment_requires_tools = any(
             self._attachment_needs_tooling_for_turn(meta, history_turn_count=len(history_turns))
             for meta in attachment_metas
@@ -768,7 +769,7 @@ class OfficeAgent:
                 },
                 ensure_ascii=False,
             )
-        if followup_attachment_requires_tools and not route.get("use_worker_tools"):
+        if followup_has_attachments and settings.enable_tools and not route.get("use_worker_tools"):
             route = self._normalize_route_decision(
                 {
                     "task_type": "attachment_tooling",
@@ -781,8 +782,16 @@ class OfficeAgent:
                     "use_web_prefetch": False,
                     "use_conflict_detector": False,
                     "specialists": ["file_reader"],
-                    "reason": "backend_followup_attachment_requires_tooling",
-                    "summary": "跟进轮附件本轮仅提供路径，Coordinator 已强制启用 Worker 工具链继续读取。",
+                    "reason": (
+                        "backend_followup_attachment_requires_tooling"
+                        if followup_attachment_requires_tools
+                        else "backend_followup_attachment_prefers_worker_tooling"
+                    ),
+                    "summary": (
+                        "跟进轮附件本轮仅提供路径，Coordinator 已强制启用 Worker 工具链继续读取。"
+                        if followup_attachment_requires_tools
+                        else "检测到跟进轮新增附件，Coordinator 已优先切回 Worker 工具链，避免只基于预览或内联片段误判。"
+                    ),
                     "source": "backend_override",
                 },
                 fallback=route,
@@ -791,7 +800,11 @@ class OfficeAgent:
             router_raw = json.dumps(
                 {
                     "source": "backend_override",
-                    "reason": "followup_attachment_requires_tooling",
+                    "reason": (
+                        "followup_attachment_requires_tooling"
+                        if followup_attachment_requires_tools
+                        else "followup_attachment_prefers_worker_tooling"
+                    ),
                     "task_type": route.get("task_type"),
                 },
                 ensure_ascii=False,
@@ -919,7 +932,6 @@ class OfficeAgent:
                 "notes": [],
             },
         )
-        planner_brief = planner_result.payload
         planner_raw = planner_result.raw_text
         if route.get("use_planner"):
             set_role_activity("coordinator", "planner", current="planner", phase="规划", detail="整理目标与执行计划")
@@ -938,9 +950,8 @@ class OfficeAgent:
                 detail=planner_request_detail,
             )
             planner_result = self._run_planner_role(context=planner_result.context, settings=settings)
-            planner_brief = planner_result.payload
             planner_raw = planner_result.raw_text
-            planner_effective_model = str(planner_result.effective_model or planner_brief.get("effective_model") or "").strip()
+            planner_effective_model = str(planner_result.effective_model or "").strip()
             if planner_effective_model:
                 effective_model = planner_effective_model
             usage_total = self._merge_usage(usage_total, planner_result.usage or self._empty_usage())
@@ -955,13 +966,13 @@ class OfficeAgent:
                     f"{self._shorten(planner_raw, 4000 if debug_raw else 1200)}"
                 ),
             )
-            planner_plan = self._normalize_string_list(planner_brief.get("plan") or [], limit=8, item_limit=160)
+            planner_plan = self._normalize_string_list(planner_result.payload.get("plan") or [], limit=8, item_limit=160)
             if planner_plan:
                 execution_plan[:] = planner_plan
             planner_summary = planner_result.summary or "已生成目标摘要。"
             planner_bullets = (
-                self._normalize_string_list(planner_brief.get("constraints") or [], limit=3, item_limit=180)
-                + self._normalize_string_list(planner_brief.get("plan") or [], limit=4, item_limit=180)
+                self._normalize_string_list(planner_result.payload.get("constraints") or [], limit=3, item_limit=180)
+                + self._normalize_string_list(planner_result.payload.get("plan") or [], limit=4, item_limit=180)
             )
             add_panel("planner", "Planner", planner_summary, planner_bullets)
             planner_system_hint = self._format_planner_system_hint(planner_result)
@@ -976,7 +987,7 @@ class OfficeAgent:
         else:
             add_trace("Router 已跳过 Planner。")
 
-        specialist_prefetch_query = user_message
+        specialist_prefetch_query = planner_user_message
         specialist_system_hints: list[str] = []
         for specialist in self._normalize_specialists(route.get("specialists") or []):
             specialist_label = _SPECIALIST_LABELS.get(specialist, specialist)
@@ -994,13 +1005,14 @@ class OfficeAgent:
                     f"model={self.config.summary_model or requested_model}\n"
                     f"task_type={route.get('task_type')}\n"
                     f"attachments={len(attachment_metas)}\n"
-                    f"user_message_preview={self._shorten(user_message, 400 if not debug_raw else 5000)}"
+                    f"user_message_preview={self._shorten(planner_user_message, 400 if not debug_raw else 5000)}"
                 ),
             )
             specialist_context = self._make_role_context(
                 specialist,
                 requested_model=requested_model,
                 user_message=user_message,
+                effective_user_message=planner_user_message,
                 history_summary=summary,
                 attachment_metas=attachment_metas,
                 route=route,
@@ -1009,7 +1021,7 @@ class OfficeAgent:
             specialist_result = self._run_specialist_with_context(context=specialist_context)
             specialist_brief = specialist_result.payload
             specialist_raw = specialist_result.raw_text
-            specialist_model = str(specialist_result.effective_model or specialist_brief.get("effective_model") or "").strip()
+            specialist_model = str(specialist_result.effective_model or "").strip()
             usage_total = self._merge_usage(usage_total, specialist_result.usage or self._empty_usage())
             for note in specialist_result.notes:
                 add_trace(note)
@@ -1025,14 +1037,14 @@ class OfficeAgent:
             add_panel(
                 specialist,
                 f"Specialist · {specialist_label}",
-                str(specialist_brief.get("summary") or "").strip() or f"{specialist_label} 已生成简报。",
-                self._normalize_string_list(specialist_brief.get("bullets") or [], limit=4, item_limit=180),
+                specialist_result.summary or f"{specialist_label} 已生成简报。",
+                self._normalize_string_list(specialist_result.payload.get("bullets") or [], limit=4, item_limit=180),
             )
             specialist_hint = self._format_specialist_system_hint(specialist, specialist_result)
             if specialist_hint:
                 specialist_system_hints.append(specialist_hint)
             if specialist == "researcher":
-                suggested_queries = self._normalize_string_list(specialist_brief.get("queries") or [], limit=3, item_limit=80)
+                suggested_queries = self._normalize_string_list(specialist_result.payload.get("queries") or [], limit=3, item_limit=80)
                 if suggested_queries:
                     specialist_prefetch_query = suggested_queries[0]
         for hint in reversed(specialist_system_hints):
@@ -1114,6 +1126,26 @@ class OfficeAgent:
             model: str,
             current_runner: Any | None = None,
         ) -> tuple[Any, Any, str, list[str]]:
+            if execution_state.attempts >= execution_state.max_attempts:
+                execution_state.status = "attempt_limit_reached"
+                execution_state.transitions.append("attempt_limit_reached")
+                add_trace(f"已达到 Worker 最大尝试次数 {execution_state.max_attempts}，Coordinator 停止继续重试。")
+                add_debug(
+                    stage="backend_warning",
+                    title="Coordinator 达到最大尝试次数",
+                    detail=(
+                        f"attempts={execution_state.attempts}\n"
+                        f"max_attempts={execution_state.max_attempts}\n"
+                        f"tool_mode={execution_state.tool_mode}"
+                    ),
+                )
+                add_panel(
+                    "coordinator",
+                    "Coordinator",
+                    self._coordinator_summary(execution_state),
+                    self._coordinator_panel_bullets(execution_state),
+                )
+                raise RuntimeError(f"Worker exceeded max_attempts={execution_state.max_attempts}")
             execution_state.attempts += 1
             execution_state.status = "worker_running"
             execution_state.transitions.append(f"invoke:{execution_state.tool_mode}")
@@ -1719,7 +1751,6 @@ class OfficeAgent:
                 "notes": [],
             },
         )
-        conflict_brief = conflict_result.payload
         reviewer_result = self._make_default_role_result(
             "reviewer",
             requested_model=effective_model,
@@ -1753,7 +1784,6 @@ class OfficeAgent:
                 "readonly_evidence": [],
             },
         )
-        reviewer_brief = reviewer_result.payload
         if route.get("use_reviewer"):
             max_reviewer_reruns = 3
             reviewer_rerun_budget = max_reviewer_reruns if self._coordinator_tools_enabled(execution_state) else 0
@@ -1797,9 +1827,8 @@ class OfficeAgent:
                         },
                     )
                     conflict_result = self._run_answer_conflict_detector_role(context=conflict_context)
-                    conflict_brief = conflict_result.payload
                     conflict_raw = conflict_result.raw_text
-                    conflict_effective_model = str(conflict_result.effective_model or conflict_brief.get("effective_model") or "").strip()
+                    conflict_effective_model = str(conflict_result.effective_model or "").strip()
                     if conflict_effective_model:
                         effective_model = conflict_effective_model
                     usage_total = self._merge_usage(usage_total, conflict_result.usage or self._empty_usage())
@@ -1814,7 +1843,7 @@ class OfficeAgent:
                         ),
                     )
                     conflict_summary = conflict_result.summary or "已完成通识冲突检查。"
-                    conflict_bullets = self._normalize_string_list(conflict_brief.get("concerns") or [], limit=4, item_limit=180)
+                    conflict_bullets = self._normalize_string_list(conflict_result.payload.get("concerns") or [], limit=4, item_limit=180)
                     add_panel("conflict_detector", "Conflict Detector", conflict_summary, conflict_bullets)
                 else:
                     add_trace("Router 已跳过 Conflict Detector。")
@@ -1865,16 +1894,15 @@ class OfficeAgent:
                     debug_cb=add_debug,
                     trace_cb=add_trace,
                 )
-                reviewer_brief = reviewer_result.payload
                 reviewer_raw = reviewer_result.raw_text
-                reviewer_effective_model = str(reviewer_result.effective_model or reviewer_brief.get("effective_model") or "").strip()
+                reviewer_effective_model = str(reviewer_result.effective_model or "").strip()
                 if reviewer_effective_model:
                     effective_model = reviewer_effective_model
                 usage_total = self._merge_usage(usage_total, reviewer_result.usage or self._empty_usage())
                 for note in reviewer_result.notes:
                     add_trace(note)
-                reviewer_verdict = str(reviewer_brief.get("verdict") or "pass").strip().lower()
-                reviewer_confidence = str(reviewer_brief.get("confidence") or "medium").strip().lower()
+                reviewer_verdict = str(reviewer_result.payload.get("verdict") or "pass").strip().lower()
+                reviewer_confidence = str(reviewer_result.payload.get("confidence") or "medium").strip().lower()
                 if reviewer_verdict == "block":
                     add_trace(f"多 Role: Reviewer 判定阻断，需要大幅修订，confidence={reviewer_confidence}。")
                 elif reviewer_verdict == "warn":
@@ -1897,18 +1925,18 @@ class OfficeAgent:
                         item_limit=80,
                     )
                     + self._normalize_string_list(
-                        [f"使用工具: {item}" for item in reviewer_brief.get("readonly_checks") or []],
+                        [f"使用工具: {item}" for item in reviewer_result.payload.get("readonly_checks") or []],
                         limit=4,
                         item_limit=180,
                     )
                     + self._normalize_string_list(
-                        [f"复核证据: {item}" for item in reviewer_brief.get("readonly_evidence") or []],
+                        [f"复核证据: {item}" for item in reviewer_result.payload.get("readonly_evidence") or []],
                         limit=4,
                         item_limit=200,
                     )
-                    + self._normalize_string_list(reviewer_brief.get("strengths") or [], limit=2, item_limit=180)
-                    + self._normalize_string_list(reviewer_brief.get("risks") or [], limit=3, item_limit=180)
-                    + self._normalize_string_list(reviewer_brief.get("followups") or [], limit=2, item_limit=180)
+                    + self._normalize_string_list(reviewer_result.payload.get("strengths") or [], limit=2, item_limit=180)
+                    + self._normalize_string_list(reviewer_result.payload.get("risks") or [], limit=3, item_limit=180)
+                    + self._normalize_string_list(reviewer_result.payload.get("followups") or [], limit=2, item_limit=180)
                 )
                 add_panel("reviewer", "Reviewer", reviewer_summary, reviewer_bullets)
 
@@ -1933,6 +1961,7 @@ class OfficeAgent:
                             f"followup_reads={json.dumps(followup_reads, ensure_ascii=False)}"
                         ),
                     )
+                    messages.append(ai_msg)
                     for idx, synthetic_call in enumerate(followup_reads, start=1):
                         synthetic_name = str(synthetic_call.get("name") or "").strip()
                         synthetic_args = (
@@ -1948,7 +1977,6 @@ class OfficeAgent:
                             call_id=f"reviewer_followup_{idx}",
                             synthetic=True,
                         )
-                    messages.append(ai_msg)
                     messages.append(
                         self._SystemMessage(
                             content=(
@@ -1984,7 +2012,7 @@ class OfficeAgent:
                         detail=(
                             f"reviewer_verdict={reviewer_verdict}\n"
                             f"reviewer_summary={self._shorten(reviewer_summary, 280)}\n"
-                            f"reviewer_risks={json.dumps(self._normalize_string_list(reviewer_brief.get('risks') or [], limit=4, item_limit=180), ensure_ascii=False)}"
+                            f"reviewer_risks={json.dumps(self._normalize_string_list(reviewer_result.payload.get('risks') or [], limit=4, item_limit=180), ensure_ascii=False)}"
                         ),
                     )
                     messages.append(ai_msg)
@@ -2024,9 +2052,9 @@ class OfficeAgent:
                             f"effective_user_request={self._shorten(planner_user_message, 280 if not debug_raw else 5000)}",
                             f"reviewer_verdict={reviewer_verdict}",
                             f"reviewer_confidence={reviewer_confidence}",
-                            f"reviewer_summary={self._shorten(str(reviewer_brief.get('summary') or ''), 220 if not debug_raw else 5000)}",
-                            f"reviewer_risks={json.dumps(self._normalize_string_list(reviewer_brief.get('risks') or [], limit=4, item_limit=180), ensure_ascii=False)}",
-                            f"reviewer_followups={json.dumps(self._normalize_string_list(reviewer_brief.get('followups') or [], limit=3, item_limit=180), ensure_ascii=False)}",
+                            f"reviewer_summary={self._shorten(reviewer_result.summary, 220 if not debug_raw else 5000)}",
+                            f"reviewer_risks={json.dumps(self._normalize_string_list(reviewer_result.payload.get('risks') or [], limit=4, item_limit=180), ensure_ascii=False)}",
+                            f"reviewer_followups={json.dumps(self._normalize_string_list(reviewer_result.payload.get('followups') or [], limit=3, item_limit=180), ensure_ascii=False)}",
                             f"current_text_chars={len(text)}",
                             f"current_text_preview={self._shorten(text, 400 if not debug_raw else 5000)}",
                         ]
@@ -2051,16 +2079,15 @@ class OfficeAgent:
                         extra={"evidence_required_mode": evidence_required_mode},
                     )
                     revision_result = self._run_revision_role(context=revision_context)
-                    revision_brief = revision_result.payload
                     revision_raw = revision_result.raw_text
-                    revision_effective_model = str(revision_result.effective_model or revision_brief.get("effective_model") or "").strip()
+                    revision_effective_model = str(revision_result.effective_model or "").strip()
                     if revision_effective_model:
                         effective_model = revision_effective_model
                     usage_total = self._merge_usage(usage_total, revision_result.usage or self._empty_usage())
                     for note in revision_result.notes:
                         add_trace(note)
-                    revised_text = str(revision_brief.get("final_answer") or "").strip()
-                    revision_changed = bool(revision_brief.get("changed")) and bool(revised_text)
+                    revised_text = str(revision_result.payload.get("final_answer") or "").strip()
+                    revision_changed = bool(revision_result.payload.get("changed")) and bool(revised_text)
                     if revision_changed:
                         if self._should_preserve_worker_answer_after_revision(
                             current_text=text,
@@ -2092,7 +2119,7 @@ class OfficeAgent:
                     )
                     revision_summary = revision_result.summary or "已完成最终润色与修订判断。"
                     revision_bullets = self._normalize_string_list(
-                        revision_brief.get("key_changes") or [], limit=4, item_limit=180
+                        revision_result.payload.get("key_changes") or [], limit=4, item_limit=180
                     )
                     add_panel("revision", "Revision", revision_summary, revision_bullets)
                 else:
@@ -2108,6 +2135,12 @@ class OfficeAgent:
             tool_events=tool_events,
         )
         finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
+        answer_bundle = self._fallback_answer_bundle(
+            final_text=text,
+            citations=finalized_citations,
+            reviewer_brief=reviewer_result,
+            conflict_brief=conflict_result,
+        )
         if not route.get("use_structurer"):
             clear_role_activity()
             return (
@@ -2181,7 +2214,7 @@ class OfficeAgent:
         add_panel(
             "structurer",
             "Structured Output",
-            str(answer_bundle.get("summary") or "").strip() or "已生成结构化答案与证据链。",
+            structurer_result.summary or str(answer_bundle.get("summary") or "").strip() or "已生成结构化答案与证据链。",
             self._normalize_string_list(
                 [f"claims={len(answer_bundle.get('claims') or [])}", f"citations={len(answer_bundle.get('citations') or [])}"]
                 + [f"warning: {item}" for item in (answer_bundle.get("warnings") or [])],
@@ -2757,13 +2790,15 @@ class OfficeAgent:
                         )
                     result = self.tools.execute(name, args)
                     result_json = json.dumps(result, ensure_ascii=False)
+                    result_ok = bool(result.get("ok")) if isinstance(result, dict) else False
                     tool_payload, trim_note = self._prepare_tool_result_for_llm(
                         name=name,
                         arguments=args,
                         raw_result=result,
                         raw_json=result_json,
                     )
-                    reviewer_tool_names.append(name)
+                    if result_ok:
+                        reviewer_tool_names.append(name)
                     evidence_summary = self._summarize_reviewer_tool_result(name=name, result=result)
                     if evidence_summary:
                         reviewer_evidence.append(evidence_summary)
@@ -4217,6 +4252,7 @@ class OfficeAgent:
         )
         specialist_input = "\n".join(
             [
+                f"effective_user_request:\n{context.primary_user_request or '(empty)'}",
                 f"user_message:\n{context.user_message.strip() or '(empty)'}",
                 f"history_summary:\n{context.history_summary.strip() or '(none)'}",
                 f"route:\n{route_summary}",
@@ -4229,6 +4265,8 @@ class OfficeAgent:
             system_prompt = (
                 "你是 Researcher 专门角色。"
                 "你的职责是为后续 Worker 生成联网取证简报，而不是直接回答用户。"
+                "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
+                "必须以 effective_user_request 作为主要分析目标。"
                 "聚焦：搜索角度、来源优先级、需要核对的时间/地点/人物关系。"
                 '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
                 "bullets 最多 4 条，queries 最多 3 条。"
@@ -4237,6 +4275,8 @@ class OfficeAgent:
             system_prompt = (
                 "你是 FileReader 专门角色。"
                 "你的职责是为文档/附件任务生成阅读与定位简报，而不是直接回答用户。"
+                "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
+                "必须以 effective_user_request 作为主要阅读目标。"
                 "聚焦：应优先看的文件、章节、关键词、命中策略。"
                 '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
                 "bullets 最多 4 条，queries 最多 4 条。"
@@ -4246,6 +4286,8 @@ class OfficeAgent:
             system_prompt = (
                 "你是 Summarizer 专门角色。"
                 "你的职责是为简单理解任务生成内容提炼简报，而不是输出最终答复。"
+                "如果 raw user_message 只是短跟进或纠偏，而 effective_user_request 延续了完整目标，"
+                "必须以 effective_user_request 作为主要整理目标。"
                 "聚焦：用户真正要的结论、重点信息、回答组织方式。"
                 '只返回 JSON，对象字段固定为 summary, bullets, worker_hint, queries。'
                 f"bullets 最多 {bullet_limit} 条；如果不需要 queries，就返回空数组。"
@@ -5516,6 +5558,25 @@ class OfficeAgent:
         }
 
         if self._looks_like_code_generation_request(user_message, attachment_metas):
+            if has_attachments or inline_document_payload or spec_lookup_request or evidence_required:
+                return self._normalize_route_decision(
+                    {
+                        "task_type": "grounded_code_generation",
+                        "complexity": "high" if (has_attachments or evidence_required or spec_lookup_request) else "medium",
+                        "use_planner": True,
+                        "use_worker_tools": bool(settings.enable_tools),
+                        "use_reviewer": False,
+                        "use_revision": False,
+                        "use_structurer": False,
+                        "use_web_prefetch": False,
+                        "use_conflict_detector": False,
+                        "specialists": ["file_reader"] if has_attachments else [],
+                        "reason": "rules_grounded_code_generation_request",
+                        "summary": "检测到基于附件/原文/现有代码的生成请求，保留阅读与实现链路，但不进入事实审阅链。",
+                    },
+                    fallback=fallback,
+                    settings=settings,
+                )
             return self._normalize_route_decision(
                 {
                     "task_type": "code_generation",
@@ -5869,6 +5930,12 @@ class OfficeAgent:
                 "本轮属于本地代码定位/函数解释任务。"
                 "直接调用 search_codebase、list_directory、read_text_file 等工具搜索并读取上下文。"
                 "不要向用户追问是否确认、是否继续，也不要要求绝对路径。"
+            )
+        if task_type == "grounded_code_generation":
+            return (
+                "本轮属于基于附件、原文或现有代码的生成/改写任务。"
+                "先读取相关附件或上下文，再按约束直接实现。"
+                "不要把答案改写成事实审计或证据仲裁格式。"
             )
         if task_type == "code_generation":
             return (
