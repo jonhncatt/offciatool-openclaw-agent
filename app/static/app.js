@@ -606,12 +606,14 @@ function appendCitationSection(wrap, titleText, citations, noteText = "") {
   wrap.appendChild(section);
 }
 
-function buildAnswerBundleNode(bundle) {
+function buildAnswerBundleNode(bundle, options = {}) {
+  const showSummary = Boolean(options?.showSummary);
+  const showAssertions = Boolean(options?.showAssertions);
   const wrap = document.createElement("div");
   wrap.className = "answer-bundle";
 
   const summary = String(bundle?.summary || "").trim();
-  if (summary) {
+  if (showSummary && summary) {
     const summaryNode = document.createElement("div");
     summaryNode.className = "answer-bundle-summary";
     summaryNode.textContent = summary;
@@ -619,7 +621,7 @@ function buildAnswerBundleNode(bundle) {
   }
 
   const claims = Array.isArray(bundle?.claims) ? bundle.claims : [];
-  if (claims.length) {
+  if (showAssertions && claims.length) {
     const section = document.createElement("div");
     section.className = "answer-bundle-section";
     const title = document.createElement("div");
@@ -672,7 +674,7 @@ function buildAnswerBundleNode(bundle) {
     wrap.appendChild(section);
   }
 
-  return wrap;
+  return wrap.childElementCount ? wrap : null;
 }
 
 function addBubble(role, text, answerBundle = null) {
@@ -684,7 +686,10 @@ function addBubble(role, text, answerBundle = null) {
     content.innerHTML = renderAssistantMarkdown(value);
     bubble.appendChild(content);
     if (hasAnswerBundleContent(answerBundle)) {
-      bubble.appendChild(buildAnswerBundleNode(answerBundle));
+      const bundleNode = buildAnswerBundleNode(answerBundle, { showSummary: false, showAssertions: false });
+      if (bundleNode) {
+        bubble.appendChild(bundleNode);
+      }
     }
   } else {
     bubble.textContent = value;
