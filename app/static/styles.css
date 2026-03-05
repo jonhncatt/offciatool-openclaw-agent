@@ -336,6 +336,14 @@ button.small {
   line-height: 1.4;
 }
 
+body.panel-debug-off .role-board-legend {
+  display: none;
+}
+
+body.panel-debug-off .role-board-shell {
+  padding: 8px 10px;
+}
+
 .role-board {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -362,6 +370,11 @@ button.small {
     );
   box-shadow: 0 8px 18px rgba(33, 65, 46, 0.08);
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+body.panel-debug-off .role-card {
+  min-height: 102px;
+  gap: 6px;
 }
 
 .role-card::after {
@@ -535,6 +548,12 @@ button.small {
   font-size: 11px;
   line-height: 1.45;
   color: #4b6153;
+}
+
+body.panel-debug-off .role-summary,
+body.panel-debug-off .role-phase,
+body.panel-debug-off .role-bullets {
+  display: none;
 }
 
 .role-phase {

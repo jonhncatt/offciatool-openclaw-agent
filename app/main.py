@@ -48,7 +48,7 @@ session_store = SessionStore(config.sessions_dir)
 upload_store = UploadStore(config.uploads_dir)
 token_stats_store = TokenStatsStore(config.token_stats_path)
 _agent: OfficeAgent | None = None
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.5"
 
 
 def _resolve_build_version() -> str:

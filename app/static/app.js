@@ -31,6 +31,7 @@ const tokenInput = document.getElementById("tokenInput");
 const ctxInput = document.getElementById("ctxInput");
 const styleInput = document.getElementById("styleInput");
 const toolInput = document.getElementById("toolInput");
+const panelDebugInput = document.getElementById("panelDebugInput");
 const rawDebugInput = document.getElementById("rawDebugInput");
 const presetGeneralBtn = document.getElementById("presetGeneralBtn");
 const presetCodingBtn = document.getElementById("presetCodingBtn");
@@ -45,14 +46,18 @@ const runAgentPanelsView = document.getElementById("runAgentPanelsView");
 const runAnswerBundleView = document.getElementById("runAnswerBundleView");
 const runLlmFlowView = document.getElementById("runLlmFlowView");
 const runRoleBoard = document.getElementById("runRoleBoard");
+const runtimeDebugSections = Array.from(document.querySelectorAll(".runtime-panel .debug-only"));
 
 const RUN_FLOW_STEPS = [
   { id: "prepare", label: "1. 准备请求" },
   { id: "send", label: "2. 发送请求" },
   { id: "wait", label: "3. 模型处理中" },
-  { id: "parse", label: "4. 解析结果" },
+  { id: "parse", label: "4. 整理结果" },
   { id: "done", label: "5. 完成" },
 ];
+const PANEL_DEBUG_STORAGE_KEY = "officetool.panel_debug";
+let currentRunStepId = null;
+let currentRunTone = "idle";
 
 const LLM_FLOW_STAGE_LABELS = {
   frontend_prepare: "前端组包",
@@ -506,6 +511,38 @@ function applyModePreset(mode, announce = true) {
       `已切换到${preset.label}：model=${preset.model}，max_tokens=${preset.maxOutputTokens}，context=${preset.maxContextTurns}`
     );
   }
+}
+
+function isPanelDebugEnabled() {
+  return Boolean(panelDebugInput?.checked);
+}
+
+function applyPanelDebugMode(enabled, { persist = true } = {}) {
+  const value = Boolean(enabled);
+  if (panelDebugInput) {
+    panelDebugInput.checked = value;
+  }
+  document.body.classList.toggle("panel-debug-on", value);
+  document.body.classList.toggle("panel-debug-off", !value);
+  runtimeDebugSections.forEach((node) => {
+    node.hidden = !value;
+    if (!value && "open" in node) node.open = false;
+  });
+  if (persist) {
+    try {
+      window.localStorage.setItem(PANEL_DEBUG_STORAGE_KEY, value ? "1" : "0");
+    } catch {}
+  }
+  renderRunSteps(currentRunStepId, currentRunTone === "error");
+}
+
+function restorePanelDebugMode() {
+  let enabled = false;
+  try {
+    const raw = String(window.localStorage.getItem(PANEL_DEBUG_STORAGE_KEY) || "").trim().toLowerCase();
+    enabled = raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  } catch {}
+  applyPanelDebugMode(enabled, { persist: false });
 }
 
 function hasAnswerBundleContent(bundle) {
@@ -1014,7 +1051,7 @@ async function restoreSessionIfPossible() {
 function renderRunSteps(activeStepId, isError = false) {
   if (!runStepList) return;
 
-  const activeIndex = RUN_FLOW_STEPS.findIndex((step) => step.id === activeStepId);
+  const activeIndex = RUN_FLOW_STEPS.findIndex((step) => step.id === String(activeStepId || "").trim());
   runStepList.innerHTML = "";
 
   RUN_FLOW_STEPS.forEach((step, index) => {
@@ -1032,6 +1069,8 @@ function renderRunSteps(activeStepId, isError = false) {
 }
 
 function setRunStage(stageLabel, text, stepId = null, tone = "idle") {
+  currentRunStepId = String(stepId || "").trim() || null;
+  currentRunTone = String(tone || "idle").trim() || "idle";
   if (runStageBadge) {
     runStageBadge.textContent = stageLabel;
     runStageBadge.className = `stage-badge stage-${tone}`;
@@ -1039,7 +1078,7 @@ function setRunStage(stageLabel, text, stepId = null, tone = "idle") {
   if (runStageText) {
     runStageText.textContent = text;
   }
-  renderRunSteps(stepId, tone === "error");
+  renderRunSteps(currentRunStepId, currentRunTone === "error");
 }
 
 function formatJsonPreview(value, maxChars = 10000) {
@@ -2039,6 +2078,12 @@ dropZone.addEventListener("drop", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
+if (panelDebugInput) {
+  panelDebugInput.addEventListener("change", () => {
+    applyPanelDebugMode(Boolean(panelDebugInput.checked));
+  });
+}
+
 if (presetGeneralBtn) {
   presetGeneralBtn.addEventListener("click", () => applyModePreset("general"));
 }
@@ -2102,6 +2147,7 @@ if (deleteSessionBtn) {
 
 (async function boot() {
   applyModePreset("general", false);
+  restorePanelDebugMode();
   setRunStage("空闲", "等待发送请求", null, "idle");
   updateDrillAvailability();
   updateEvalAvailability();

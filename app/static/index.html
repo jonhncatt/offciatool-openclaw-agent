@@ -68,6 +68,10 @@
           启用本地工具执行
         </label>
         <label class="row-check">
+          <input id="panelDebugInput" type="checkbox" />
+          Debug 模式（显示执行流程与多 Role 调试面板）
+        </label>
+        <label class="row-check">
           <input id="rawDebugInput" type="checkbox" />
           RAW 调试模式（交换内容尽量显示原文）
         </label>
@@ -122,15 +126,15 @@
             <div id="runRoleBoard" class="role-board"></div>
           </section>
           <div id="runStepList" class="runtime-steps"></div>
-          <details class="runtime-details">
+          <details class="runtime-details debug-only">
             <summary>本轮发送信息</summary>
             <pre id="runPayloadView" class="runtime-pre">暂无请求</pre>
           </details>
-          <details class="runtime-details">
+          <details class="runtime-details debug-only">
             <summary>本轮执行流程</summary>
             <pre id="runTraceView" class="runtime-pre">暂无执行轨迹</pre>
           </details>
-          <details class="runtime-details">
+          <details class="runtime-details debug-only">
             <summary>多 Role 图例</summary>
             <pre class="runtime-pre">阶段 3 状态: MVP 已完成
 
@@ -160,15 +164,15 @@ Router -> Coordinator -> [Planner?] -> [Researcher/FileReader/Summarizer?] -> Wo
 3. 文档定位
    Router -> Coordinator -> FileReader -> Planner -> Worker(tools) -> Reviewer -> Structurer</pre>
           </details>
-          <details class="runtime-details">
+          <details class="runtime-details debug-only">
             <summary>多 Role 透明层</summary>
             <pre id="runAgentPanelsView" class="runtime-pre">暂无多 Role 摘要</pre>
           </details>
-          <details class="runtime-details">
+          <details class="runtime-details debug-only">
             <summary>结构化证据包</summary>
             <pre id="runAnswerBundleView" class="runtime-pre">暂无结构化证据包</pre>
           </details>
-          <details class="runtime-details">
+          <details class="runtime-details debug-only">
             <summary>LLM ↔ 后端交换（调试）</summary>
             <pre id="runLlmFlowView" class="runtime-pre">暂无交换记录</pre>
           </details>
