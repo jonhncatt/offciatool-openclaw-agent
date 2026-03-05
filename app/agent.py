@@ -3673,6 +3673,7 @@ class OfficeAgent:
             "生成",
             "创建",
             "新建",
+            "改",
             "写",
             "编写",
             "实现",
@@ -3747,7 +3748,32 @@ class OfficeAgent:
         if not has_code_target and not attachment_metas:
             return False
         if any(hint in text for hint in lookup_only_hints) and not any(
-            hint in text for hint in ("生成", "创建", "新建", "编写", "实现", "开发", "generate", "create", "implement", "build", "scaffold")
+            hint in text
+            for hint in (
+                "生成",
+                "创建",
+                "新建",
+                "改",
+                "写",
+                "编写",
+                "实现",
+                "开发",
+                "补全",
+                "重构",
+                "改写",
+                "修改",
+                "修复",
+                "generate",
+                "create",
+                "write",
+                "implement",
+                "build",
+                "scaffold",
+                "refactor",
+                "rewrite",
+                "modify",
+                "fix",
+            )
         ):
             return False
         return True
@@ -5535,6 +5561,39 @@ class OfficeAgent:
             return True
         return False
 
+    def _looks_like_internal_ticket_reference(self, user_message: str) -> bool:
+        text = str(user_message or "").strip().lower()
+        if not text:
+            return False
+        ticket_markers = (
+            "redmine",
+            "jira",
+            "ticket",
+            "issue",
+            "工单",
+            "票",
+            "任务单",
+            "缺陷",
+            "bug单",
+            "需求单",
+        )
+        internal_markers = (
+            "internal",
+            "intranet",
+            "corp",
+            "private",
+            "内部",
+            "内网",
+            "公司",
+            "企业",
+            "私有",
+        )
+        has_ticket = any(marker in text for marker in ticket_markers)
+        has_internal = any(marker in text for marker in internal_markers)
+        has_url = "http://" in text or "https://" in text
+        # Internal ticket messages often include both ticket semantics and private context hints.
+        return has_ticket and (has_internal or has_url)
+
     def _attachment_is_inline_parseable(self, meta: dict[str, Any]) -> bool:
         suffix = str(meta.get("suffix") or "").strip().lower()
         kind = str(meta.get("kind") or "").strip().lower()
@@ -5640,11 +5699,26 @@ class OfficeAgent:
         )
         inline_document_payload = self._looks_like_inline_document_payload(user_message)
         understanding_request = self._looks_like_understanding_request(user_message)
-        web_request = (
+        has_url = "http://" in text or "https://" in text
+        short_query_like = len(text) <= 280 and "\n" not in text
+        explicit_web_intent = any(hint in text for hint in ("上网", "网上", "联网", "web research", "web_research"))
+        internal_ticket_reference = self._looks_like_internal_ticket_reference(user_message)
+        news_request = (
             any(hint in text for hint in _NEWS_HINTS)
-            or "http://" in text
-            or "https://" in text
-            or any(hint in text for hint in ("上网", "网上", "联网", "search_web", "fetch_web", "download_web_file"))
+            and short_query_like
+            and not has_attachments
+            and not inline_document_payload
+            and not internal_ticket_reference
+        )
+        web_request = (
+            news_request
+            or explicit_web_intent
+            or (
+                has_url
+                and not internal_ticket_reference
+                and not has_attachments
+                and not inline_document_payload
+            )
         )
         request_requires_tools = self._request_likely_requires_tools(user_message, attachment_metas)
 
