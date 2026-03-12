@@ -115,14 +115,21 @@ _FOLLOWUP_REFERENCE_HINTS = (
     "这个内容",
     "这个结果",
     "这份",
+    "这段",
+    "该段",
     "这版",
     "上述",
     "上面",
     "前面",
     "刚才",
     "刚刚",
+    "上一轮",
+    "上轮",
     "上一条",
     "上一版",
+    "上一段",
+    "原文",
+    "命中",
     "那个",
     "that",
     "this",
@@ -135,6 +142,12 @@ _FOLLOWUP_TRANSFORM_HINTS = (
     "改写",
     "重写",
     "润色",
+    "翻译",
+    "译成",
+    "译为",
+    "中文",
+    "英文",
+    "双语",
     "写进",
     "写到",
     "放到",
@@ -149,6 +162,8 @@ _FOLLOWUP_TRANSFORM_HINTS = (
     "summarize",
     "rewrite",
     "polish",
+    "translate",
+    "translation",
 )
 
 _UNDERSTANDING_HINTS = (
@@ -862,6 +877,14 @@ class OfficeAgent:
             self._attachment_needs_tooling_for_turn(meta, history_turn_count=len(history_turns))
             for meta in attachment_metas
         )
+        inline_followup_source = ""
+        if not attachment_metas and self._looks_like_context_dependent_followup(user_message):
+            inline_followup_source = self._find_recent_user_inline_payload_for_followup(
+                history_turns=history_turns,
+                current_message=user_message,
+            )
+            if inline_followup_source and not followup_topic_hint:
+                followup_topic_hint = self._shorten(inline_followup_source.strip(), 520)
         force_tool_followup = self._should_force_tool_followup_continuation(
             current_message=user_message,
             followup_topic_hint=followup_topic_hint,
@@ -880,6 +903,16 @@ class OfficeAgent:
                 )
             )
             add_trace(f"已识别为跟进请求，默认延续主题：{self._shorten(followup_topic_hint, 120)}")
+        if inline_followup_source:
+            messages.append(
+                self._SystemMessage(
+                    content=(
+                        "检测到本轮是对上一轮已粘贴原文的继续加工（如翻译/提炼/改写）。"
+                        "请直接复用上一轮用户原文上下文，不要要求用户重复粘贴原文。"
+                    )
+                )
+            )
+            add_trace("检测到原文延续型跟进请求，已要求 Worker 默认复用上一轮原文。")
         if force_tool_followup:
             messages.append(
                 self._SystemMessage(
@@ -939,6 +972,7 @@ class OfficeAgent:
             summary=summary,
             attachment_metas=attachment_metas,
             settings=settings,
+            inline_followup_context=bool(inline_followup_source),
         )
         execution_state = self._coordinator_init_state(
             route=route,
@@ -2624,6 +2658,7 @@ class OfficeAgent:
             user_message=user_message,
             attachment_metas=attachment_metas,
             tool_events=tool_events,
+            inline_followup_context=bool(inline_followup_source),
         )
         finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
         if str(route.get("task_type") or "").strip().lower() == "meeting_minutes":
@@ -3572,6 +3607,7 @@ class OfficeAgent:
         user_message: str,
         attachment_metas: list[dict[str, Any]],
         tool_events: list[ToolEvent] | None = None,
+        inline_followup_context: bool = False,
     ) -> str:
         original = str(text or "").strip()
         if not original:
@@ -3601,6 +3637,12 @@ class OfficeAgent:
             cleaned = re.sub(r"(?is)[^。；\n]*(?:本地文件路径|文件路径|磁盘文件)[^。；\n]*[。；]?", "", cleaned)
             cleaned = re.sub(r"(?is)[^。；\n]*无法进行可复核的解析[^。；\n]*[。；]?", "", cleaned)
             cleaned = re.sub(r"(?is)[^。；\n]*请(?:提供|给出|上传).{0,40}路径[^。；\n]*[。；]?", "", cleaned)
+        if inline_followup_context and not attachment_metas:
+            cleaned = re.sub(
+                r"(?is)[^。；\n]*(?:请(?:先)?粘贴原文|请(?:先)?贴原文|请(?:先)?把原文贴|请(?:先)?提供原文(?:片段)?|paste the original|provide the original text)[^。；\n]*[。；]?",
+                "",
+                cleaned,
+            )
 
         if local_access_succeeded:
             cleaned = re.sub(r"(?is)[^。；\n]*(?:无法访问用户本地路径|无法访问本地路径|无法读取用户本地路径)[^。；\n]*[。；]?", "", cleaned)
@@ -3628,6 +3670,8 @@ class OfficeAgent:
         if not cleaned:
             if not attachment_metas and self._looks_like_inline_document_payload(user_message) and had_internal_meta:
                 return "已按你直接粘贴的原始文本内容理解，不需要额外提供本地文件路径。请继续指定你要我解释的结构、字段或结论。"
+            if inline_followup_context and had_permission_gate:
+                return "我会直接基于你上一轮已贴的原文继续处理，不需要你重复粘贴原文。请继续告诉我你要翻译/提炼的范围。"
             if local_access_succeeded and (had_path_denial or had_permission_gate or had_internal_meta):
                 return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
             if (inferred_bare_tool or bare_tool_like_json) and self._request_likely_requires_tools(user_message, attachment_metas):
@@ -3967,6 +4011,12 @@ class OfficeAgent:
             return ""
 
         if context_dependent_followup:
+            recent_inline_payload = self._find_recent_user_inline_payload_for_followup(
+                history_turns=history_turns,
+                current_message=current,
+            )
+            if recent_inline_payload:
+                return self._shorten(recent_inline_payload.strip(), 520)
             for turn in reversed(history_turns):
                 role = str(turn.get("role") or "").strip().lower()
                 text = str(turn.get("text") or "").strip()
@@ -3999,6 +4049,28 @@ class OfficeAgent:
                 and not self._looks_like_local_path_denial(text)
             ):
                 return self._shorten(compact_text, 280)
+        return ""
+
+    def _find_recent_user_inline_payload_for_followup(
+        self,
+        *,
+        history_turns: list[dict[str, Any]],
+        current_message: str,
+    ) -> str:
+        current = str(current_message or "").strip()
+        for turn in reversed(history_turns):
+            role = str(turn.get("role") or "").strip().lower()
+            if role != "user":
+                continue
+            text = str(turn.get("text") or "").strip()
+            if not text or text == current:
+                continue
+            if self._looks_like_inline_document_payload(text):
+                return text
+            if len(text) >= 260 and text.count("\n") >= 4:
+                return text
+            if len(text) >= 420 and not self._message_has_explicit_local_path(text):
+                return text
         return ""
 
     def _looks_like_short_followup_search(self, text: str) -> bool:
@@ -6720,8 +6792,10 @@ class OfficeAgent:
         user_message: str,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
+        inline_followup_context: bool = False,
     ) -> dict[str, Any]:
         text = (user_message or "").strip().lower()
+        context_dependent_followup = self._looks_like_context_dependent_followup(user_message)
         has_attachments = bool(attachment_metas)
         spec_lookup_request = self._looks_like_spec_lookup_request(user_message, attachment_metas)
         evidence_required = self._requires_evidence_mode(user_message, attachment_metas)
@@ -6803,6 +6877,34 @@ class OfficeAgent:
             "summary": "默认走完整流水线。",
             "router_model": "",
         }
+
+        if (
+            inline_followup_context
+            and context_dependent_followup
+            and not has_attachments
+            and not web_request
+            and not local_code_lookup_request
+            and not self._message_has_explicit_local_path(user_message)
+            and not self._looks_like_write_or_edit_action(text)
+        ):
+            return self._normalize_route_decision(
+                {
+                    "task_type": "simple_understanding",
+                    "complexity": "low",
+                    "use_planner": False,
+                    "use_worker_tools": False,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["summarizer"],
+                    "reason": "rules_inline_followup_context_understanding",
+                    "summary": "检测到引用上一轮原文的加工型跟进，直接沿用现有原文上下文回答。",
+                },
+                fallback=fallback,
+                settings=settings,
+            )
 
         if self._looks_like_code_generation_request(user_message, attachment_metas):
             if grounded_code_generation_context:
@@ -7223,11 +7325,13 @@ class OfficeAgent:
         summary: str,
         attachment_metas: list[dict[str, Any]],
         settings: ChatSettings,
+        inline_followup_context: bool = False,
     ) -> tuple[dict[str, Any], str]:
         rules_route = self._route_request_by_rules(
             user_message=user_message,
             attachment_metas=attachment_metas,
             settings=settings,
+            inline_followup_context=inline_followup_context,
         )
         if not rules_route.get("needs_llm_router"):
             return rules_route, json.dumps({"source": "rules", "task_type": rules_route.get("task_type")}, ensure_ascii=False)
@@ -8466,6 +8570,29 @@ class OfficeAgent:
             return False
         if not attachment_metas and self._looks_like_inline_document_payload(user_message):
             return False
+        if (
+            not attachment_metas
+            and self._looks_like_context_dependent_followup(user_message)
+            and any(
+                hint in text
+                for hint in (
+                    "翻译",
+                    "译成",
+                    "译为",
+                    "中文",
+                    "英文",
+                    "双语",
+                    "总结",
+                    "概括",
+                    "提炼",
+                    "整理",
+                    "改写",
+                    "润色",
+                    "translate",
+                )
+            )
+        ):
+            return False
         hints = (
             "spec",
             "specification",
@@ -8817,6 +8944,10 @@ class OfficeAgent:
             "请贴原文",
             "请把原文贴",
             "请提供原文",
+            "请先提供原文",
+            "请先提供原文片段",
+            "请先贴原文",
+            "请先把原文贴",
             "请把代码贴出来",
             "请贴出完整代码",
             "请贴出原始代码",

@@ -195,6 +195,7 @@ cd $HOME\Desktop\officetool
 - `fetch_web` 遇到 PDF 会尽量抽取正文文本；需要原始文件时请用 `download_web_file`
 - 上传附件会把“本地路径”注入上下文；压缩包建议直接 `extract_zip(zip_path=该路径, ...)`
 - 同一会话内，若本轮未显式携带附件，但提问明显在引用“这个/上个附件”，后端会自动关联最近活动附件；若不想关联，可直接说“忽略之前附件/清空附件”
+- 同一会话内，若用户上一轮已直接粘贴原文，本轮是“翻译/提炼/改写”类跟进，后端会默认复用上一轮原文上下文，不要求重复粘贴
 - 对 `.msg` 邮件中附件（xlsx/png 等）可先 `extract_msg_attachments(msg_path=该路径, ...)` 再读取
 - 可用 `OFFICETOOL_ENABLE_SESSION_TOOLS=false` 关闭会话检索工具（`list_sessions/read_session_history`）
 - 联网任务建议先 `search_web` 再 `fetch_web`，可减少“先问网址”的来回交互

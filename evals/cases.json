@@ -510,6 +510,30 @@
     }
   },
   {
+    "name": "helper_sanitize_final_answer_strips_redundant_original_text_prompt_for_inline_followup",
+    "kind": "helper",
+    "helper": "_sanitize_final_answer_text",
+    "args": {
+      "text": "我可以继续处理，但请先提供原文片段。",
+      "user_message": "你把原文命中的地方，附上中文翻译。",
+      "attachment_metas": [],
+      "inline_followup_context": true
+    },
+    "assert": {
+      "contains_any": {
+        "result": [
+          "不需要你重复粘贴原文",
+          "继续处理"
+        ]
+      },
+      "not_contains": {
+        "result": [
+          "请先提供原文片段"
+        ]
+      }
+    }
+  },
+  {
     "name": "helper_permission_gate_detects_large_file_continue_prompt",
     "kind": "helper",
     "helper": "_looks_like_permission_gate_text",
@@ -815,6 +839,69 @@
           "run_chat",
           "workbench"
         ]
+      }
+    }
+  },
+  {
+    "name": "helper_context_dependent_followup_detects_original_hit_translation_request",
+    "kind": "helper",
+    "helper": "_looks_like_context_dependent_followup",
+    "args": {
+      "text": "你把原文命中的地方，附上中文翻译"
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_followup_topic_hint_prefers_recent_user_inline_payload",
+    "kind": "helper",
+    "helper": "_build_followup_topic_hint",
+    "args": {
+      "user_message": "你把原文命中的地方，附上中文翻译",
+      "history_turns": [
+        {
+          "role": "user",
+          "text": "这是我贴的原文第一段：The controller shall maintain a rolling error log across power cycles.\n这是第二段：When feature 0x15 is set, the command returns Operation Denied under restricted mode.\n这是第三段：The host may query support bits via Get Features command with FID 0x0A.\n这是第四段：All reserved fields must be written as zero and ignored on read."
+        },
+        {
+          "role": "assistant",
+          "text": "我已经概括了原文中的关键点。"
+        }
+      ]
+    },
+    "assert": {
+      "contains_any": {
+        "result": [
+          "Operation Denied",
+          "rolling error log",
+          "Get Features"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_route_rules_inline_followup_context_prefers_direct_understanding",
+    "kind": "helper",
+    "helper": "_route_request_by_rules",
+    "args": {
+      "user_message": "你把原文命中的地方，附上中文翻译",
+      "attachment_metas": [],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "normal"
+      },
+      "inline_followup_context": true
+    },
+    "assert": {
+      "equals": {
+        "task_type": "simple_understanding",
+        "use_worker_tools": false,
+        "use_reviewer": false,
+        "use_structurer": false
       }
     }
   },
