@@ -115,6 +115,10 @@ _FOLLOWUP_REFERENCE_HINTS = (
     "这个",
     "这个内容",
     "这个结果",
+    "这个表",
+    "这张表",
+    "该表",
+    "表格",
     "这份",
     "这段",
     "该段",
@@ -140,6 +144,13 @@ _FOLLOWUP_REFERENCE_HINTS = (
 _FOLLOWUP_TRANSFORM_HINTS = (
     "归纳",
     "整理",
+    "重整",
+    "重排",
+    "重做",
+    "排版",
+    "表格化",
+    "格式化",
+    "优化格式",
     "改写",
     "重写",
     "润色",
@@ -172,6 +183,10 @@ _UNDERSTANDING_HINTS = (
     "总结下",
     "概括",
     "提炼",
+    "整理",
+    "重整",
+    "重排",
+    "表格化",
     "讲讲",
     "讲一下",
     "讲下",
@@ -3728,6 +3743,12 @@ class OfficeAgent:
             has_attachments=bool(attachment_metas),
             request_requires_tools=local_access_succeeded,
         )
+        had_inline_evidence_gate = bool(
+            re.search(
+                r"(?is)(?:证据优先任务模式|并不来自任何本地文件|无法进行复核取证|必须明确说明无法进行复核取证)",
+                original,
+            )
+        )
         cleaned = re.sub(r"(?im)^.*\b(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)\b.*$", "", cleaned)
         cleaned = re.sub(
             r"(?is)(?:^|[。；\n])[^。；\n]*(?:reviewer_verdict|reviewer_confidence|evidence_required_mode|task_mode)[^。；\n]*[。；]?",
@@ -3742,6 +3763,19 @@ class OfficeAgent:
         if inline_followup_context and not attachment_metas:
             cleaned = re.sub(
                 r"(?is)[^。；\n]*(?:请(?:先)?粘贴原文|请(?:先)?贴原文|请(?:先)?把原文贴|请(?:先)?提供原文(?:片段)?|paste the original|provide the original text)[^。；\n]*[。；]?",
+                "",
+                cleaned,
+            )
+        if (
+            not attachment_metas
+            and (
+                inline_followup_context
+                or self._looks_like_context_dependent_followup(user_message)
+                or self._looks_like_table_reformat_request(user_message)
+            )
+        ):
+            cleaned = re.sub(
+                r"(?is)[^。；\n]*(?:证据优先任务模式|并不来自任何本地文件|无法进行复核取证|必须明确说明无法进行复核取证)[^。；\n]*[。；]?",
                 "",
                 cleaned,
             )
@@ -3774,6 +3808,8 @@ class OfficeAgent:
                 return "已按你直接粘贴的原始文本内容理解，不需要额外提供本地文件路径。请继续指定你要我解释的结构、字段或结论。"
             if inline_followup_context and had_permission_gate:
                 return "我会直接基于你上一轮已贴的原文继续处理，不需要你重复粘贴原文。请继续告诉我你要翻译/提炼的范围。"
+            if had_inline_evidence_gate:
+                return "我会直接基于你当前会话里已提供的文本继续整理，不需要本地路径或页码。请告诉我你想要的表格列和排序方式。"
             if local_access_succeeded and (had_path_denial or had_permission_gate or had_internal_meta):
                 return "我已经能访问你授权的本地路径，不需要你重复提供路径或再次授权。请直接继续说明要看的函数、文件或上下文，我会继续读取并给出结果。"
             if (inferred_bare_tool or bare_tool_like_json) and self._request_likely_requires_tools(user_message, attachment_metas):
@@ -4169,6 +4205,12 @@ class OfficeAgent:
                 continue
             if self._looks_like_inline_document_payload(text):
                 return text
+            if re.search(r"(?m)^\s*\|.+\|\s*$", text) and text.count("\n") >= 1:
+                return text
+            if "\t" in text and text.count("\n") >= 1 and len(text) >= 40:
+                return text
+            if re.search(r"(?m)^.{2,}\s{2,}.{2,}$", text) and text.count("\n") >= 2 and len(text) >= 60:
+                return text
             if len(text) >= 260 and text.count("\n") >= 4:
                 return text
             if len(text) >= 420 and not self._message_has_explicit_local_path(text):
@@ -4362,6 +4404,13 @@ class OfficeAgent:
         has_reference = any(hint in lowered for hint in _FOLLOWUP_REFERENCE_HINTS)
         has_transform = any(hint in lowered for hint in _FOLLOWUP_TRANSFORM_HINTS)
         if has_reference and has_transform:
+            return True
+        if (
+            len(lowered) <= 100
+            and has_transform
+            and any(token in lowered for token in ("再", "继续", "接着", "重新", "再次", "again"))
+            and any(token in lowered for token in ("表格", "table", "原文", "文本", "内容", "这版", "上一版", "这个"))
+        ):
             return True
         if has_reference and len(lowered) <= 120 and ("文档" in lowered or "版本" in lowered or "总结" in lowered):
             return True
@@ -8750,11 +8799,70 @@ class OfficeAgent:
         )
         return any(hint in text for hint in hints)
 
+    def _looks_like_table_reformat_request(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if not lowered:
+            return False
+        if "table_extract" in lowered or "read_text_file" in lowered:
+            return False
+        has_table_ref = any(token in lowered for token in ("表格", "这张表", "这个表", "该表", "table", "tsv", "csv"))
+        if not has_table_ref:
+            return False
+        evidence_markers = (
+            "证据",
+            "出处",
+            "引用",
+            "定位",
+            "命中",
+            "查证",
+            "核对",
+            "页码",
+            "路径",
+            "行号",
+            "根据原文",
+            "在哪看到",
+            "哪里看到",
+            "哪一页",
+            "citation",
+            "show me where",
+            "which page",
+            "where did you see",
+        )
+        if any(marker in lowered for marker in evidence_markers):
+            return False
+        format_markers = (
+            "整理",
+            "重整",
+            "重排",
+            "排版",
+            "表格化",
+            "格式",
+            "格式化",
+            "优化",
+            "美化",
+            "规范",
+            "改成",
+            "改为",
+            "再整理",
+            "再排",
+            "再调整",
+            "重新整理",
+            "format",
+            "reformat",
+            "rearrange",
+            "clean up",
+            "tidy",
+            "markdown",
+        )
+        return any(marker in lowered for marker in format_markers)
+
     def _requires_evidence_mode(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         text = (user_message or "").strip().lower()
         if not text:
             return False
         if not attachment_metas and self._looks_like_inline_document_payload(user_message):
+            return False
+        if not attachment_metas and self._looks_like_table_reformat_request(text):
             return False
         if (
             not attachment_metas
@@ -8779,33 +8887,7 @@ class OfficeAgent:
             )
         ):
             return False
-        hints = (
-            "spec",
-            "specification",
-            "protocol",
-            "opcode",
-            "register",
-            "section",
-            "chapter",
-            "heading",
-            "table",
-            "pdf",
-            "docx",
-            "xlsx",
-            "codebase",
-            "repo",
-            "source code",
-            "line ",
-            "规范",
-            "协议",
-            "规格",
-            "章节",
-            "表格",
-            "源码",
-            "代码库",
-            "行号",
-            "路径",
-            "页码",
+        verification_hints = (
             "证据",
             "出处",
             "引用",
@@ -8827,7 +8909,37 @@ class OfficeAgent:
             "which page",
             "where did you see",
         )
-        return any(hint in text for hint in hints)
+        if any(hint in text for hint in verification_hints):
+            return True
+        scope_hints = (
+            "spec",
+            "specification",
+            "protocol",
+            "opcode",
+            "register",
+            "section",
+            "chapter",
+            "heading",
+            "pdf",
+            "docx",
+            "xlsx",
+            "codebase",
+            "repo",
+            "source code",
+            "line ",
+            "规范",
+            "协议",
+            "规格",
+            "章节",
+            "源码",
+            "代码库",
+            "行号",
+            "路径",
+            "页码",
+        )
+        if attachment_metas:
+            return any(hint in text for hint in scope_hints)
+        return False
 
     def _attachment_needs_tooling(self, meta: dict[str, Any]) -> bool:
         suffix = str(meta.get("suffix") or "").strip().lower()

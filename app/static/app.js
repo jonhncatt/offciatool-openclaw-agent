@@ -883,8 +883,124 @@ function escapeHtml(raw) {
     .replace(/'/g, "&#39;");
 }
 
+function normalizeTableLikeTextToMarkdown(rawText) {
+  const source = String(rawText ?? "");
+  if (!source.trim()) return source;
+
+  const codeBlocks = [];
+  const tokenized = source.replace(/```[\s\S]*?```/g, (block) => {
+    const token = `__MD_CODE_PRESERVE_${codeBlocks.length}__`;
+    codeBlocks.push({ token, block: String(block) });
+    return token;
+  });
+
+  const isMdTableSeparator = (line) =>
+    /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || ""));
+
+  const lines = tokenized.replace(/\r\n/g, "\n").split("\n");
+  const codeTokenSet = new Set(codeBlocks.map((item) => item.token));
+  const output = [];
+
+  const shouldSkipTableNormalization = (blockLines) => {
+    const codeHints = (
+      /\b(function|class|def|import|const|let|var|return|public|private)\b/i
+    );
+    return blockLines.some((line) => {
+      const t = String(line || "").trim();
+      if (!t) return false;
+      if (/^[-*+]\s+/.test(t) || /^\d+\.\s+/.test(t) || /^>\s*/.test(t) || /^#{1,6}\s+/.test(t)) return true;
+      if (/[{};]/.test(t)) return true;
+      return codeHints.test(t);
+    });
+  };
+
+  const splitColumns = (line) => {
+    const text = String(line || "").trim();
+    if (!text) return null;
+    if (text.includes("\t")) {
+      const parts = text.split(/\t+/).map((item) => item.trim()).filter(Boolean);
+      if (parts.length >= 2) return { mode: "tab", parts };
+    }
+    if (!/\s{2,}/.test(text)) return null;
+    const parts = text.split(/\s{2,}/).map((item) => item.trim()).filter(Boolean);
+    if (parts.length >= 2) return { mode: "space", parts };
+    return null;
+  };
+
+  const normalizeBlockToTable = (blockLines) => {
+    if (!Array.isArray(blockLines) || blockLines.length < 2) return null;
+    if (shouldSkipTableNormalization(blockLines)) return null;
+    for (let idx = 0; idx < blockLines.length - 1; idx += 1) {
+      const cur = String(blockLines[idx] || "").trim();
+      const next = String(blockLines[idx + 1] || "").trim();
+      if (cur.includes("|") && isMdTableSeparator(next)) {
+        return null;
+      }
+    }
+
+    const rows = [];
+    const modes = [];
+    for (const line of blockLines) {
+      const parsed = splitColumns(line);
+      if (!parsed) return null;
+      rows.push(parsed.parts);
+      modes.push(parsed.mode);
+    }
+    const colCount = rows[0]?.length || 0;
+    if (colCount < 2 || colCount > 12) return null;
+    if (rows.some((row) => row.length !== colCount)) return null;
+
+    const hasTabRow = modes.includes("tab");
+    if (!hasTabRow && rows.length < 3) return null;
+
+    const esc = (cell) => String(cell ?? "").replace(/\|/g, "\\|");
+    const out = [];
+    out.push(`| ${rows[0].map(esc).join(" | ")} |`);
+    out.push(`| ${rows[0].map(() => "---").join(" | ")} |`);
+    rows.slice(1).forEach((row) => out.push(`| ${row.map(esc).join(" | ")} |`));
+    return out;
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = String(line || "").trim();
+    if (!trimmed) {
+      output.push(line);
+      i += 1;
+      continue;
+    }
+    if (codeTokenSet.has(trimmed)) {
+      output.push(line);
+      i += 1;
+      continue;
+    }
+
+    let j = i;
+    while (j < lines.length) {
+      const t = String(lines[j] || "").trim();
+      if (!t || codeTokenSet.has(t)) break;
+      j += 1;
+    }
+    const block = lines.slice(i, j);
+    const normalized = normalizeBlockToTable(block);
+    if (normalized) {
+      output.push(...normalized);
+    } else {
+      output.push(...block);
+    }
+    i = j;
+  }
+
+  let result = output.join("\n");
+  codeBlocks.forEach((item) => {
+    result = result.replace(item.token, item.block);
+  });
+  return result;
+}
+
 function renderAssistantMarkdown(text) {
-  const source = String(text ?? "");
+  const source = normalizeTableLikeTextToMarkdown(text);
   const markedApi = window.marked;
   const purifyApi = window.DOMPurify;
 

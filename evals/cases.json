@@ -1323,6 +1323,58 @@
     }
   },
   {
+    "name": "helper_table_reformat_request_not_forced_into_evidence_mode",
+    "kind": "helper",
+    "helper": "_requires_evidence_mode",
+    "args": {
+      "user_message": "把表格再整理一下，按列对齐并优化格式。",
+      "attachment_metas": []
+    },
+    "assert": {
+      "equals": {
+        "result": false
+      }
+    }
+  },
+  {
+    "name": "helper_context_dependent_followup_detects_short_table_reformat",
+    "kind": "helper",
+    "helper": "_looks_like_context_dependent_followup",
+    "args": {
+      "text": "把表格再整理一下"
+    },
+    "assert": {
+      "equals": {
+        "result": true
+      }
+    }
+  },
+  {
+    "name": "helper_sanitize_final_answer_strips_inline_evidence_gate_for_table_followup",
+    "kind": "helper",
+    "helper": "_sanitize_final_answer_text",
+    "args": {
+      "text": "你给的资料是直接贴在讯息中的文字，并不来自任何本地文件，无法执行工具，也不存在路径、页码这类证据。在证据优先任务模式下，若内容不是文件来源，必须明确说明无法进行复核取证。\n\n下面是整理后的表格：\\n|A|B|\\n|---|---|\\n|1|2|",
+      "user_message": "把表格再整理一下",
+      "attachment_metas": [],
+      "inline_followup_context": true
+    },
+    "assert": {
+      "not_contains": {
+        "result": [
+          "证据优先任务模式",
+          "并不来自任何本地文件",
+          "无法进行复核取证"
+        ]
+      },
+      "contains": {
+        "result": [
+          "下面是整理后的表格"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",
