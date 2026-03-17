@@ -316,6 +316,14 @@ _ROLE_KINDS = {
     "structurer": "agent",
 }
 
+_PIPELINE_HOOK_HANDLERS = {
+    "before_route_finalize": "_hook_before_route_finalize",
+    "before_worker_prompt": "_hook_before_worker_prompt",
+    "before_reviewer": "_hook_before_reviewer",
+    "after_planner": "_hook_after_planner",
+    "before_structurer": "_hook_before_structurer",
+}
+
 
 @dataclass
 class ExecutionState:
@@ -1030,133 +1038,50 @@ class OfficeAgent:
             route_state=route_state,
             inline_followup_context=bool(inline_followup_source),
         )
+        route_finalize_hook = self._run_pipeline_hook(
+            "before_route_finalize",
+            route=route,
+            router_raw=router_raw,
+            planner_user_message=planner_user_message,
+            attachment_issues=attachment_issues,
+            followup_has_attachments=followup_has_attachments,
+            followup_attachment_requires_tools=followup_attachment_requires_tools,
+            attachment_metas=attachment_metas,
+            settings=settings,
+        )
+        route = route_finalize_hook["route"]
+        router_raw = str(route_finalize_hook["router_raw"] or "")
+        self._apply_pipeline_hook_effects(
+            hook_payload=route_finalize_hook,
+            add_trace=add_trace,
+            add_debug=add_debug,
+        )
         execution_state = self._coordinator_init_state(
             route=route,
             settings=settings,
             force_tool_followup=force_tool_followup,
         )
-        if force_tool_followup and not route.get("use_worker_tools"):
-            route = self._coordinator_apply_tool_mode(
-                state=execution_state,
-                route=route,
-                settings=settings,
-                tool_mode="forced",
-                reason="followup_execution_ack_forces_tool_continuation",
-                summary="检测到用户已明确授权继续执行上一轮工具任务，继续 Worker 工具链。",
-                use_planner=True,
-            )
-            add_debug(
-                stage="backend_coordinator",
-                title="Coordinator 切换工具模式",
-                detail=(
-                    "reason=followup_execution_ack_forces_tool_continuation\n"
-                    f"tool_mode={execution_state.tool_mode}\n"
-                    f"tool_latch={str(execution_state.tool_latch).lower()}\n"
-                    f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
-                ),
-            )
-            router_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "followup_execution_ack_forces_tool_continuation",
-                    "task_type": route.get("task_type"),
-                },
-                ensure_ascii=False,
-            )
-        attachment_context_incomplete = any(
-            ("未结构化解析" in str(issue)) or ("文档解析失败" in str(issue))
-            for issue in attachment_issues
+        worker_prompt_hook = self._run_pipeline_hook(
+            "before_worker_prompt",
+            route=route,
+            router_raw=router_raw,
+            execution_state=execution_state,
+            planner_user_message=planner_user_message,
+            attachment_metas=attachment_metas,
+            settings=settings,
+            force_tool_followup=force_tool_followup,
         )
-        if (
-            attachment_context_incomplete
-            and settings.enable_tools
-            and not route.get("use_worker_tools")
-            and self._looks_like_understanding_request(planner_user_message)
-        ):
-            route = self._normalize_route_decision(
-                {
-                    "task_type": "attachment_tooling",
-                    "complexity": "medium",
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "specialists": ["file_reader"],
-                    "reason": "backend_attachment_context_incomplete_requires_tooling",
-                    "summary": "检测到附件仅注入了预览或解析失败，Coordinator 已切回 Worker 工具链先完成读取。",
-                    "source": "backend_override",
-                },
-                fallback=route,
-                settings=settings,
-            )
-            router_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "attachment_context_incomplete_requires_tooling",
-                    "task_type": route.get("task_type"),
-                },
-                ensure_ascii=False,
-            )
-        if followup_has_attachments and settings.enable_tools and not route.get("use_worker_tools"):
-            route = self._normalize_route_decision(
-                {
-                    "task_type": "attachment_tooling",
-                    "complexity": "medium",
-                    "use_planner": True,
-                    "use_worker_tools": True,
-                    "use_reviewer": False,
-                    "use_revision": False,
-                    "use_structurer": False,
-                    "use_web_prefetch": False,
-                    "use_conflict_detector": False,
-                    "specialists": ["file_reader"],
-                    "reason": (
-                        "backend_followup_attachment_requires_tooling"
-                        if followup_attachment_requires_tools
-                        else "backend_followup_attachment_prefers_worker_tooling"
-                    ),
-                    "summary": (
-                        "跟进轮附件本轮仅提供路径，Coordinator 已强制启用 Worker 工具链继续读取。"
-                        if followup_attachment_requires_tools
-                        else "检测到跟进轮新增附件，Coordinator 已优先切回 Worker 工具链，避免只基于预览或内联片段误判。"
-                    ),
-                    "source": "backend_override",
-                },
-                fallback=route,
-                settings=settings,
-            )
-            router_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": (
-                        "followup_attachment_requires_tooling"
-                        if followup_attachment_requires_tools
-                        else "followup_attachment_prefers_worker_tooling"
-                    ),
-                    "task_type": route.get("task_type"),
-                },
-                ensure_ascii=False,
-            )
-        if settings.enable_tools and bool(route.get("use_worker_tools")) and not self._coordinator_tools_enabled(execution_state):
-            route = self._coordinator_apply_tool_mode(
-                state=execution_state,
-                route=route,
-                settings=settings,
-                tool_mode="forced" if (force_tool_followup or followup_has_attachments or attachment_context_incomplete) else "on",
-                reason="backend_route_requires_worker_tools_sync",
-                summary="Router/Coordinator 判定本轮需 Worker 工具链，已同步开启工具绑定。",
-            )
-            router_raw = json.dumps(
-                {
-                    "source": "backend_override",
-                    "reason": "route_requires_worker_tools_sync",
-                    "task_type": route.get("task_type"),
-                },
-                ensure_ascii=False,
-            )
+        route = worker_prompt_hook["route"]
+        router_raw = str(worker_prompt_hook["router_raw"] or "")
+        execution_state = worker_prompt_hook["execution_state"]
+        spec_lookup_request = bool(worker_prompt_hook["spec_lookup_request"])
+        evidence_required_mode = bool(worker_prompt_hook["evidence_required_mode"])
+        self._apply_pipeline_hook_effects(
+            hook_payload=worker_prompt_hook,
+            messages=messages,
+            add_trace=add_trace,
+            add_debug=add_debug,
+        )
         run_state = RunState.create(
             run_id=f"run_{int(time.time() * 1000)}_{os.getpid()}",
             session_id=str(session_id or ""),
@@ -1242,61 +1167,6 @@ class OfficeAgent:
             phase="分诊",
             detail=f"task_type={route.get('task_type') or 'standard'}",
         )
-
-        router_system_hint = self._router_system_hint(route)
-        if router_system_hint:
-            messages.insert(1, self._SystemMessage(content=router_system_hint))
-            add_trace("多 Role: Coordinator 已将 Router 摘要注入 Worker 请求。")
-            add_debug(
-                stage="backend_coordinator",
-                title="Coordinator 注入 Router 摘要",
-                detail=router_system_hint,
-            )
-
-        raw_spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
-        raw_evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
-        route_task_type = str(route.get("task_type") or "").strip().lower()
-        spec_lookup_request = raw_spec_lookup_request and route_task_type == "evidence_lookup"
-        evidence_required_mode = raw_evidence_required_mode and route_task_type == "evidence_lookup"
-        if spec_lookup_request:
-            messages.append(
-                self._SystemMessage(
-                    content=(
-                        "本轮属于规范/规格书定位任务。"
-                        "先用 search_text_in_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
-                        "必要时分别尝试章节关键词和 15h/15 h/0x15 这类十六进制变体；"
-                        "再用 read_text_file 读取命中附近上下文；"
-                        "最终回答必须附带命中证据。"
-                        "若未命中，只能说当前提取文本未定位到，不得直接断言规范不存在。"
-                    )
-                )
-            )
-            add_trace("已启用规范文档检索模式。")
-        if evidence_required_mode and route.get("use_worker_tools"):
-            messages.append(
-                self._SystemMessage(
-                    content=(
-                        "本轮已启用 evidence_required_mode。"
-                        "对于文件、规范、代码库、章节定位类任务，必须给出证据来源（如路径、页码、章节、行号、命中片段）。"
-                        "若证据不足，只能明确说明不足，不得给出无证据的确定性结论。"
-                    )
-                )
-            )
-            add_trace("已启用证据优先模式。")
-        if route.get("use_worker_tools") and self._should_auto_search_default_roots(planner_user_message, attachment_metas):
-            messages.append(
-                self._SystemMessage(
-                    content=(
-                        "本轮属于本地搜索/代码定位任务，且用户未提供明确路径。"
-                        "请先直接尝试默认搜索：优先在当前工作区根目录 '.' 使用 search_codebase；"
-                        "若仍不够，再在允许访问根目录中选择最可能的项目目录继续搜索。"
-                        "如果用户给了目录名（例如 workbench），可以直接把它当成 root/path 尝试。"
-                        "不要先向用户索取路径，也不要要求用户提供工具调用格式。"
-                    )
-                )
-            )
-            add_trace("已启用默认根目录自动搜索策略。")
-
         planner_result = self._make_default_role_result(
             "planner",
             requested_model=effective_model,
@@ -1379,15 +1249,19 @@ class OfficeAgent:
                 + self._normalize_string_list(planner_result.payload.get("plan") or [], limit=4, item_limit=180)
             )
             add_panel("planner", "Planner", planner_summary, planner_bullets)
-            planner_system_hint = self._format_planner_system_hint(planner_result)
-            if planner_system_hint:
-                messages.insert(1, self._SystemMessage(content=planner_system_hint))
-                add_trace("多 Role: Coordinator 已将 Planner 摘要注入 Worker 请求。")
-                add_debug(
-                    stage="backend_coordinator",
-                    title="Coordinator 注入 Planner 摘要",
-                    detail=planner_system_hint,
-                )
+            planner_hook = self._run_pipeline_hook(
+                "after_planner",
+                planner_brief=planner_result,
+            )
+            planner_execution_plan = planner_hook["execution_plan"]
+            if planner_execution_plan:
+                execution_plan[:] = planner_execution_plan
+            self._apply_pipeline_hook_effects(
+                hook_payload=planner_hook,
+                messages=messages,
+                add_trace=add_trace,
+                add_debug=add_debug,
+            )
         else:
             add_trace("Router 已跳过 Planner。")
             add_run_event("planner_skipped", reason="route_use_planner_false")
@@ -2401,11 +2275,23 @@ class OfficeAgent:
                 "readonly_evidence": [],
             },
         )
-        if route.get("use_reviewer"):
+        review_hook = self._run_pipeline_hook(
+            "before_reviewer",
+            route=route,
+            spec_lookup_request=spec_lookup_request,
+            evidence_required_mode=evidence_required_mode,
+        )
+        self._apply_pipeline_hook_effects(
+            hook_payload=review_hook,
+            add_trace=add_trace,
+            add_debug=add_debug,
+        )
+
+        if review_hook["use_reviewer"]:
             max_reviewer_reruns = 3
             reviewer_rerun_budget = max_reviewer_reruns if self._coordinator_tools_enabled(execution_state) else 0
             while True:
-                if route.get("use_conflict_detector"):
+                if review_hook["use_conflict_detector"]:
                     conflict_node_id, conflict_instance_id = begin_role_instance(
                         "conflict_detector",
                         parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
@@ -2685,7 +2571,7 @@ class OfficeAgent:
                         text = "模型未返回可见文本。"
                     continue
 
-                if route.get("use_revision"):
+                if review_hook["use_revision"]:
                     revision_node_id, revision_instance_id = begin_role_instance(
                         "revision",
                         parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
@@ -2784,10 +2670,10 @@ class OfficeAgent:
                     )
                     add_panel("revision", "Revision", revision_summary, revision_bullets)
                 else:
-                    add_trace("Router 已跳过 Revision。")
+                    add_trace("Hook(before_reviewer): 已跳过 Revision。")
                 break
         else:
-            add_trace("Router 已跳过 Conflict Detector / Reviewer / Revision。")
+            add_trace("Hook(before_reviewer): 已跳过 Conflict Detector / Reviewer / Revision。")
 
         text = self._sanitize_final_answer_text(
             text,
@@ -2796,27 +2682,24 @@ class OfficeAgent:
             tool_events=tool_events,
             inline_followup_context=bool(inline_followup_source),
         )
-        finalized_citations = self._finalize_citation_candidates(worker_citation_candidates)
-        if str(route.get("task_type") or "").strip().lower() == "meeting_minutes":
-            finalized_citations = []
-            add_trace("会议纪要模式：已关闭 citations（证据来源）展示，避免干扰记录型输出。")
-        answer_bundle = self._fallback_answer_bundle(
+        structurer_hook = self._run_pipeline_hook(
+            "before_structurer",
+            route=route,
             final_text=text,
-            citations=finalized_citations,
+            citations=self._finalize_citation_candidates(worker_citation_candidates),
             reviewer_brief=reviewer_result,
             conflict_brief=conflict_result,
+            evidence_required_mode=evidence_required_mode,
+            spec_lookup_request=spec_lookup_request,
         )
-        if (
-            not finalized_citations
-            and not self._is_evidence_verification_mode(
-                route=route,
-                evidence_required_mode=evidence_required_mode,
-                spec_lookup_request=spec_lookup_request,
-            )
-        ):
-            answer_bundle["claims"] = []
-            answer_bundle["warnings"] = []
-        if not route.get("use_structurer"):
+        finalized_citations = structurer_hook["finalized_citations"]
+        answer_bundle = structurer_hook["answer_bundle"]
+        self._apply_pipeline_hook_effects(
+            hook_payload=structurer_hook,
+            add_trace=add_trace,
+            add_debug=add_debug,
+        )
+        if not structurer_hook["use_structurer"]:
             clear_role_activity(final_status="completed", summary_text="completed_without_structurer")
             return (
                 text,
@@ -2834,7 +2717,7 @@ class OfficeAgent:
                 effective_model,
                 self._build_session_route_state(route) if route else {},
             )
-        if not self._should_emit_answer_bundle(finalized_citations):
+        if not structurer_hook["should_emit_answer_bundle"]:
             clear_role_activity(final_status="completed", summary_text="completed_without_answer_bundle")
             return (
                 text,
@@ -5095,6 +4978,508 @@ class OfficeAgent:
         ]
         transitions = [f"transition: {item}" for item in state.transitions[-3:]]
         return self._normalize_string_list([*base, *transitions], limit=8, item_limit=220)
+
+    def _run_pipeline_hook(self, phase: str, **kwargs: Any) -> dict[str, Any]:
+        phase_key = str(phase or "").strip()
+        handler_name = str(_PIPELINE_HOOK_HANDLERS.get(phase_key) or "").strip()
+        if not handler_name:
+            raise ValueError(f"Unknown pipeline hook phase: {phase_key or '(empty)'}")
+        handler = getattr(self, handler_name, None)
+        if not callable(handler):
+            raise ValueError(f"Pipeline hook handler missing: {handler_name}")
+        raw_result = handler(**kwargs)
+        if not isinstance(raw_result, dict):
+            raise ValueError(f"Pipeline hook {phase_key} returned non-dict payload")
+
+        normalized = dict(raw_result)
+        normalized["phase"] = phase_key
+        normalized["trace_notes"] = self._normalize_string_list(
+            normalized.get("trace_notes") or [],
+            limit=8,
+            item_limit=220,
+        )
+
+        debug_entries: list[dict[str, str]] = []
+        for item in list(normalized.get("debug_entries") or [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            debug_entries.append(
+                {
+                    "stage": str(item.get("stage") or "backend_hook").strip() or "backend_hook",
+                    "title": self._shorten(str(item.get("title") or f"Hook({phase_key})").strip(), 120),
+                    "detail": self._shorten(str(item.get("detail") or "").strip(), 4000),
+                }
+            )
+        normalized["debug_entries"] = debug_entries
+
+        prompt_injections: list[dict[str, str]] = []
+        for item in list(normalized.get("prompt_injections") or [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            position = str(item.get("position") or "append").strip().lower()
+            if position not in {"front", "append"}:
+                position = "append"
+            prompt_injections.append(
+                {
+                    "position": position,
+                    "title": self._shorten(str(item.get("title") or f"Hook({phase_key}) 注入提示").strip(), 120),
+                    "content": content,
+                    "trace_note": self._shorten(str(item.get("trace_note") or "").strip(), 220),
+                }
+            )
+        normalized["prompt_injections"] = prompt_injections
+        return normalized
+
+    def _apply_pipeline_hook_effects(
+        self,
+        *,
+        hook_payload: dict[str, Any],
+        messages: list[Any] | None = None,
+        add_trace: Callable[[str], None] | None = None,
+        add_debug: Callable[[str, str, str], None] | None = None,
+    ) -> None:
+        for note in hook_payload.get("trace_notes") or []:
+            if add_trace:
+                add_trace(str(note))
+        for item in hook_payload.get("debug_entries") or []:
+            if add_debug and isinstance(item, dict):
+                add_debug(
+                    str(item.get("stage") or "backend_hook"),
+                    str(item.get("title") or "Hook"),
+                    str(item.get("detail") or ""),
+                )
+        if messages is None:
+            return
+        for injection in hook_payload.get("prompt_injections") or []:
+            if not isinstance(injection, dict):
+                continue
+            message = self._SystemMessage(content=str(injection.get("content") or ""))
+            if str(injection.get("position") or "append") == "front":
+                messages.insert(1, message)
+            else:
+                messages.append(message)
+            trace_note = str(injection.get("trace_note") or "").strip()
+            if trace_note and add_trace:
+                add_trace(trace_note)
+            if add_debug:
+                add_debug(
+                    "backend_hook",
+                    str(injection.get("title") or "Hook 注入提示"),
+                    str(injection.get("content") or ""),
+                )
+
+    def _hook_before_route_finalize(
+        self,
+        *,
+        route: dict[str, Any],
+        router_raw: str,
+        planner_user_message: str,
+        attachment_issues: list[str],
+        followup_has_attachments: bool,
+        followup_attachment_requires_tools: bool,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+    ) -> dict[str, Any]:
+        updated_route = dict(route or {})
+        updated_raw = str(router_raw or "")
+        trace_notes: list[str] = []
+        debug_entries: list[dict[str, str]] = []
+
+        attachment_context_incomplete = any(
+            ("未结构化解析" in str(issue)) or ("文档解析失败" in str(issue))
+            for issue in (attachment_issues or [])
+        )
+        if (
+            attachment_context_incomplete
+            and settings.enable_tools
+            and not updated_route.get("use_worker_tools")
+            and self._looks_like_understanding_request(planner_user_message)
+        ):
+            updated_route = self._normalize_route_decision(
+                {
+                    "task_type": "attachment_tooling",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"],
+                    "reason": "backend_attachment_context_incomplete_requires_tooling",
+                    "summary": "检测到附件仅注入了预览或解析失败，Coordinator 已切回 Worker 工具链先完成读取。",
+                    "source": "backend_override",
+                },
+                fallback=updated_route,
+                settings=settings,
+            )
+            updated_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "attachment_context_incomplete_requires_tooling",
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+            trace_notes.append("Hook(before_route_finalize): 附件仅有预览或解析失败，已改走 attachment_tooling。")
+            debug_entries.append(
+                {
+                    "stage": "backend_hook",
+                    "title": "Hook(before_route_finalize) 切换附件工具链",
+                    "detail": "reason=attachment_context_incomplete_requires_tooling",
+                }
+            )
+
+        if followup_has_attachments and settings.enable_tools and not updated_route.get("use_worker_tools"):
+            updated_route = self._normalize_route_decision(
+                {
+                    "task_type": "attachment_tooling",
+                    "complexity": "medium",
+                    "use_planner": True,
+                    "use_worker_tools": True,
+                    "use_reviewer": False,
+                    "use_revision": False,
+                    "use_structurer": False,
+                    "use_web_prefetch": False,
+                    "use_conflict_detector": False,
+                    "specialists": ["file_reader"],
+                    "reason": (
+                        "backend_followup_attachment_requires_tooling"
+                        if followup_attachment_requires_tools
+                        else "backend_followup_attachment_prefers_worker_tooling"
+                    ),
+                    "summary": (
+                        "跟进轮附件本轮仅提供路径，Coordinator 已强制启用 Worker 工具链继续读取。"
+                        if followup_attachment_requires_tools
+                        else "检测到跟进轮新增附件，Coordinator 已优先切回 Worker 工具链，避免只基于预览或内联片段误判。"
+                    ),
+                    "source": "backend_override",
+                },
+                fallback=updated_route,
+                settings=settings,
+            )
+            updated_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": (
+                        "followup_attachment_requires_tooling"
+                        if followup_attachment_requires_tools
+                        else "followup_attachment_prefers_worker_tooling"
+                    ),
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+            trace_notes.append("Hook(before_route_finalize): 跟进轮附件优先改走 Worker 工具链。")
+            debug_entries.append(
+                {
+                    "stage": "backend_hook",
+                    "title": "Hook(before_route_finalize) 跟进附件改走工具链",
+                    "detail": (
+                        "reason=followup_attachment_requires_tooling"
+                        if followup_attachment_requires_tools
+                        else "reason=followup_attachment_prefers_worker_tooling"
+                    ),
+                }
+            )
+
+        return {
+            "route": updated_route,
+            "router_raw": updated_raw,
+            "trace_notes": trace_notes,
+            "debug_entries": debug_entries,
+        }
+
+    def _hook_before_worker_prompt(
+        self,
+        *,
+        route: dict[str, Any],
+        router_raw: str,
+        execution_state: ExecutionState,
+        planner_user_message: str,
+        attachment_metas: list[dict[str, Any]],
+        settings: ChatSettings,
+        force_tool_followup: bool,
+    ) -> dict[str, Any]:
+        updated_route = dict(route or {})
+        updated_raw = str(router_raw or "")
+        trace_notes: list[str] = []
+        debug_entries: list[dict[str, str]] = []
+        prompt_injections: list[dict[str, str]] = []
+
+        if force_tool_followup and not updated_route.get("use_worker_tools"):
+            updated_route = self._coordinator_apply_tool_mode(
+                state=execution_state,
+                route=updated_route,
+                settings=settings,
+                tool_mode="forced",
+                reason="followup_execution_ack_forces_tool_continuation",
+                summary="检测到用户已明确授权继续执行上一轮工具任务，继续 Worker 工具链。",
+                use_planner=True,
+            )
+            updated_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "followup_execution_ack_forces_tool_continuation",
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+            trace_notes.append("Hook(before_worker_prompt): 已识别为工具链续执行确认，继续 Worker 工具链。")
+            debug_entries.append(
+                {
+                    "stage": "backend_hook",
+                    "title": "Hook(before_worker_prompt) 切换工具模式",
+                    "detail": (
+                        "reason=followup_execution_ack_forces_tool_continuation\n"
+                        f"tool_mode={execution_state.tool_mode}\n"
+                        f"tool_latch={str(execution_state.tool_latch).lower()}\n"
+                        f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
+                    ),
+                }
+            )
+
+        if settings.enable_tools and bool(updated_route.get("use_worker_tools")) and not self._coordinator_tools_enabled(execution_state):
+            updated_route = self._coordinator_apply_tool_mode(
+                state=execution_state,
+                route=updated_route,
+                settings=settings,
+                tool_mode="forced" if force_tool_followup else "on",
+                reason="backend_route_requires_worker_tools_sync",
+                summary="Router/Coordinator 判定本轮需 Worker 工具链，已同步开启工具绑定。",
+            )
+            updated_raw = json.dumps(
+                {
+                    "source": "backend_override",
+                    "reason": "route_requires_worker_tools_sync",
+                    "task_type": updated_route.get("task_type"),
+                },
+                ensure_ascii=False,
+            )
+            trace_notes.append("Hook(before_worker_prompt): 已同步开启 Worker 工具绑定。")
+            debug_entries.append(
+                {
+                    "stage": "backend_hook",
+                    "title": "Hook(before_worker_prompt) 同步工具绑定",
+                    "detail": (
+                        "reason=route_requires_worker_tools_sync\n"
+                        f"tool_mode={execution_state.tool_mode}\n"
+                        f"tool_latch={str(execution_state.tool_latch).lower()}\n"
+                        f"transitions={json.dumps(execution_state.transitions[-3:], ensure_ascii=False)}"
+                    ),
+                }
+            )
+
+        router_system_hint = self._router_system_hint(updated_route)
+        if router_system_hint:
+            prompt_injections.append(
+                {
+                    "position": "front",
+                    "title": "Hook(before_worker_prompt) 注入 Router 摘要",
+                    "content": router_system_hint,
+                    "trace_note": "多 Role: Coordinator 已将 Router 摘要注入 Worker 请求。",
+                }
+            )
+
+        raw_spec_lookup_request = self._looks_like_spec_lookup_request(planner_user_message, attachment_metas)
+        raw_evidence_required_mode = self._requires_evidence_mode(planner_user_message, attachment_metas)
+        route_task_type = str(updated_route.get("task_type") or "").strip().lower()
+        spec_lookup_request = raw_spec_lookup_request and route_task_type == "evidence_lookup"
+        evidence_required_mode = raw_evidence_required_mode and route_task_type == "evidence_lookup"
+
+        if spec_lookup_request:
+            prompt_injections.append(
+                {
+                    "position": "append",
+                    "title": "Hook(before_worker_prompt) 启用规范检索模式",
+                    "content": (
+                        "本轮属于规范/规格书定位任务。"
+                        "先用 search_text_in_file 对章节名、命令码、opcode 或寄存器名做命中定位，"
+                        "必要时分别尝试章节关键词和 15h/15 h/0x15 这类十六进制变体；"
+                        "再用 read_text_file 读取命中附近上下文；"
+                        "最终回答必须附带命中证据。"
+                        "若未命中，只能说当前提取文本未定位到，不得直接断言规范不存在。"
+                    ),
+                    "trace_note": "已启用规范文档检索模式。",
+                }
+            )
+        if evidence_required_mode and updated_route.get("use_worker_tools"):
+            prompt_injections.append(
+                {
+                    "position": "append",
+                    "title": "Hook(before_worker_prompt) 启用证据优先模式",
+                    "content": (
+                        "本轮已启用 evidence_required_mode。"
+                        "对于文件、规范、代码库、章节定位类任务，必须给出证据来源（如路径、页码、章节、行号、命中片段）。"
+                        "若证据不足，只能明确说明不足，不得给出无证据的确定性结论。"
+                    ),
+                    "trace_note": "已启用证据优先模式。",
+                }
+            )
+        if updated_route.get("use_worker_tools") and self._should_auto_search_default_roots(planner_user_message, attachment_metas):
+            prompt_injections.append(
+                {
+                    "position": "append",
+                    "title": "Hook(before_worker_prompt) 启用默认根目录搜索",
+                    "content": (
+                        "本轮属于本地搜索/代码定位任务，且用户未提供明确路径。"
+                        "请先直接尝试默认搜索：优先在当前工作区根目录 '.' 使用 search_codebase；"
+                        "若仍不够，再在允许访问根目录中选择最可能的项目目录继续搜索。"
+                        "如果用户给了目录名（例如 workbench），可以直接把它当成 root/path 尝试。"
+                        "不要先向用户索取路径，也不要要求用户提供工具调用格式。"
+                    ),
+                    "trace_note": "已启用默认根目录自动搜索策略。",
+                }
+            )
+
+        return {
+            "route": updated_route,
+            "router_raw": updated_raw,
+            "execution_state": execution_state,
+            "spec_lookup_request": spec_lookup_request,
+            "evidence_required_mode": evidence_required_mode,
+            "prompt_injections": prompt_injections,
+            "trace_notes": trace_notes,
+            "debug_entries": debug_entries,
+        }
+
+    def _hook_before_reviewer(
+        self,
+        *,
+        route: dict[str, Any],
+        spec_lookup_request: bool,
+        evidence_required_mode: bool,
+    ) -> dict[str, Any]:
+        execution_policy = str(route.get("execution_policy") or "").strip().lower()
+        reviewer_requested = bool(route.get("use_reviewer"))
+        reviewer_allowed_policies = {
+            "evidence_full_pipeline",
+            "web_research_full_pipeline",
+            "standard_full_pipeline",
+        }
+        reviewer_enabled = reviewer_requested and execution_policy in reviewer_allowed_policies
+        if reviewer_requested and (spec_lookup_request or evidence_required_mode):
+            reviewer_enabled = True
+        conflict_detector_enabled = reviewer_enabled and bool(route.get("use_conflict_detector"))
+        revision_enabled = reviewer_enabled and bool(route.get("use_revision"))
+        trace_notes: list[str] = []
+        debug_entries: list[dict[str, str]] = []
+
+        if reviewer_requested and not reviewer_enabled:
+            trace_notes.append("Hook(before_reviewer): 当前 execution_policy 不允许 Reviewer，已跳过审阅链。")
+            debug_entries.append(
+                {
+                    "stage": "backend_hook",
+                    "title": "Hook(before_reviewer) 跳过审阅链",
+                    "detail": (
+                        f"execution_policy={execution_policy or '(empty)'}\n"
+                        f"task_type={str(route.get('task_type') or 'standard')}"
+                    ),
+                }
+            )
+
+        return {
+            "use_reviewer": reviewer_enabled,
+            "use_conflict_detector": conflict_detector_enabled,
+            "use_revision": revision_enabled,
+            "trace_notes": trace_notes,
+            "debug_entries": debug_entries,
+        }
+
+    def _hook_after_planner(
+        self,
+        *,
+        planner_brief: RoleResult | dict[str, Any],
+    ) -> dict[str, Any]:
+        planner_payload = self._role_payload_dict(planner_brief)
+        planner_plan = self._normalize_string_list(planner_payload.get("plan") or [], limit=8, item_limit=160)
+        planner_system_hint = self._format_planner_system_hint(planner_payload)
+        prompt_injections: list[dict[str, str]] = []
+        if planner_system_hint:
+            prompt_injections.append(
+                {
+                    "position": "front",
+                    "title": "Hook(after_planner) 注入 Planner 摘要",
+                    "content": planner_system_hint,
+                    "trace_note": "多 Role: Coordinator 已将 Planner 摘要注入 Worker 请求。",
+                }
+            )
+        return {
+            "execution_plan": planner_plan,
+            "prompt_injections": prompt_injections,
+        }
+
+    def _hook_before_structurer(
+        self,
+        *,
+        route: dict[str, Any],
+        final_text: str,
+        citations: list[dict[str, Any]],
+        reviewer_brief: RoleResult | dict[str, Any] | None,
+        conflict_brief: RoleResult | dict[str, Any] | None,
+        evidence_required_mode: bool,
+        spec_lookup_request: bool,
+    ) -> dict[str, Any]:
+        finalized_citations = list(citations or [])
+        trace_notes: list[str] = []
+        debug_entries: list[dict[str, str]] = []
+
+        if str(route.get("task_type") or "").strip().lower() == "meeting_minutes":
+            finalized_citations = []
+            trace_notes.append("Hook(before_structurer): 会议纪要模式已关闭 citations（证据来源）展示。")
+
+        answer_bundle = self._fallback_answer_bundle(
+            final_text=final_text,
+            citations=finalized_citations,
+            reviewer_brief=reviewer_brief,
+            conflict_brief=conflict_brief,
+        )
+        if (
+            not finalized_citations
+            and not self._is_evidence_verification_mode(
+                route=route,
+                evidence_required_mode=evidence_required_mode,
+                spec_lookup_request=spec_lookup_request,
+            )
+        ):
+            answer_bundle["claims"] = []
+            answer_bundle["warnings"] = []
+
+        execution_policy = str(route.get("execution_policy") or "").strip().lower()
+        structurer_requested = bool(route.get("use_structurer"))
+        allowed_policies = {
+            "evidence_full_pipeline",
+            "web_research_full_pipeline",
+            "standard_full_pipeline",
+        }
+        structurer_enabled = structurer_requested and (
+            execution_policy in allowed_policies or evidence_required_mode or spec_lookup_request
+        )
+        if structurer_requested and not structurer_enabled:
+            trace_notes.append("Hook(before_structurer): 当前 execution_policy 不允许 Structurer，已直接返回 fallback answer bundle。")
+            debug_entries.append(
+                {
+                    "stage": "backend_hook",
+                    "title": "Hook(before_structurer) 跳过结构化证据包",
+                    "detail": (
+                        f"execution_policy={execution_policy or '(empty)'}\n"
+                        f"task_type={str(route.get('task_type') or 'standard')}"
+                    ),
+                }
+            )
+
+        return {
+            "finalized_citations": finalized_citations,
+            "answer_bundle": answer_bundle,
+            "use_structurer": structurer_enabled,
+            "should_emit_answer_bundle": self._should_emit_answer_bundle(finalized_citations),
+            "trace_notes": trace_notes,
+            "debug_entries": debug_entries,
+        }
 
     def _looks_like_tool_escalation_needed(self, text: str) -> bool:
         raw = str(text or "").strip().lower()

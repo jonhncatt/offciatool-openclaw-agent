@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.agent import OfficeAgent
+from app.agent import ExecutionState, OfficeAgent
 from app.config import load_config
 from app.models import ChatSettings, ToolEvent
 from app.storage import now_iso
@@ -209,6 +209,9 @@ def _helper_arg(value: Any) -> Any:
         if marker == "ChatSettings":
             payload = {key: item for key, item in value.items() if key != "__type"}
             return ChatSettings(**payload)
+        if marker == "ExecutionState":
+            payload = {key: item for key, item in value.items() if key != "__type"}
+            return ExecutionState(**payload)
         return {key: _helper_arg(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_helper_arg(item) for item in value]

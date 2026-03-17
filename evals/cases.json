@@ -733,6 +733,206 @@
     }
   },
   {
+    "name": "helper_hook_before_worker_prompt_keeps_holistic_understanding_out_of_evidence_mode",
+    "kind": "helper",
+    "helper": "_hook_before_worker_prompt",
+    "args": {
+      "route": {
+        "task_type": "attachment_tooling",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_holistic_understanding_with_tools",
+        "use_planner": true,
+        "use_worker_tools": true,
+        "use_reviewer": false,
+        "use_revision": false,
+        "use_structurer": false,
+        "use_web_prefetch": false,
+        "use_conflict_detector": false,
+        "complexity": "medium",
+        "specialists": [
+          "file_reader"
+        ]
+      },
+      "router_raw": "{\"source\":\"rules\"}",
+      "execution_state": {
+        "__type": "ExecutionState",
+        "task_type": "attachment_tooling",
+        "complexity": "medium",
+        "tool_mode": "on",
+        "tool_latch": true,
+        "attempts": 0,
+        "max_attempts": 24,
+        "status": "ready",
+        "transitions": [
+          "init:on"
+        ]
+      },
+      "planner_user_message": "请解释这个 TCG 协议设计文档的整体思路和整体框架。",
+      "attachment_metas": [
+        {
+          "original_name": "tcg_design_spec.pdf",
+          "suffix": ".pdf",
+          "kind": "document",
+          "size": 7340032
+        }
+      ],
+      "settings": {
+        "__type": "ChatSettings",
+        "enable_tools": true,
+        "response_style": "short"
+      },
+      "force_tool_followup": false
+    },
+    "assert": {
+      "equals": {
+        "spec_lookup_request": false,
+        "evidence_required_mode": false
+      }
+    }
+  },
+  {
+    "name": "helper_hook_before_reviewer_disables_review_for_understanding_policy",
+    "kind": "helper",
+    "helper": "_hook_before_reviewer",
+    "args": {
+      "route": {
+        "task_type": "attachment_tooling",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_understanding_with_tools",
+        "use_reviewer": true,
+        "use_revision": true,
+        "use_conflict_detector": true
+      },
+      "spec_lookup_request": false,
+      "evidence_required_mode": false
+    },
+    "assert": {
+      "equals": {
+        "use_reviewer": false,
+        "use_conflict_detector": false,
+        "use_revision": false
+      }
+    }
+  },
+  {
+    "name": "helper_run_pipeline_hook_dispatches_before_reviewer",
+    "kind": "helper",
+    "helper": "_run_pipeline_hook",
+    "args": {
+      "phase": "before_reviewer",
+      "route": {
+        "task_type": "attachment_tooling",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_understanding_with_tools",
+        "use_reviewer": true,
+        "use_revision": true,
+        "use_conflict_detector": true
+      },
+      "spec_lookup_request": false,
+      "evidence_required_mode": false
+    },
+    "assert": {
+      "equals": {
+        "phase": "before_reviewer",
+        "use_reviewer": false,
+        "use_revision": false
+      }
+    }
+  },
+  {
+    "name": "helper_hook_after_planner_injects_planner_summary",
+    "kind": "helper",
+    "helper": "_hook_after_planner",
+    "args": {
+      "planner_brief": {
+        "objective": "解释 TCG 设计文档整体思路",
+        "constraints": [
+          "不要进入证据审计格式"
+        ],
+        "plan": [
+          "先概括主线",
+          "再解释模块关系"
+        ],
+        "watchouts": [
+          "避免只列术语不讲关系"
+        ]
+      }
+    },
+    "assert": {
+      "contains": {
+        "execution_plan.0": [
+          "先概括主线"
+        ],
+        "prompt_injections.0.content": [
+          "多 Role 协调摘要（来自 Planner）",
+          "执行计划:"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_hook_before_structurer_disables_structurer_for_understanding_policy",
+    "kind": "helper",
+    "helper": "_hook_before_structurer",
+    "args": {
+      "route": {
+        "task_type": "attachment_tooling",
+        "primary_intent": "understanding",
+        "execution_policy": "attachment_understanding_with_tools",
+        "use_structurer": true
+      },
+      "final_text": "这是对设计文档整体思路的解释。",
+      "citations": [
+        {
+          "kind": "evidence",
+          "tool": "read_text_file",
+          "path": "/tmp/spec.pdf",
+          "snippet": "overview section"
+        }
+      ],
+      "reviewer_brief": {},
+      "conflict_brief": {},
+      "evidence_required_mode": false,
+      "spec_lookup_request": false
+    },
+    "assert": {
+      "equals": {
+        "use_structurer": false
+      }
+    }
+  },
+  {
+    "name": "helper_hook_before_structurer_clears_meeting_minutes_citations",
+    "kind": "helper",
+    "helper": "_hook_before_structurer",
+    "args": {
+      "route": {
+        "task_type": "meeting_minutes",
+        "primary_intent": "meeting_minutes",
+        "execution_policy": "meeting_minutes_output",
+        "use_structurer": false
+      },
+      "final_text": "会议纪要整理如下。",
+      "citations": [
+        {
+          "kind": "evidence",
+          "tool": "read_text_file",
+          "path": "/tmp/meeting.docx",
+          "snippet": "agenda"
+        }
+      ],
+      "reviewer_brief": {},
+      "conflict_brief": {},
+      "evidence_required_mode": false,
+      "spec_lookup_request": false
+    },
+    "assert": {
+      "equals": {
+        "finalized_citations": []
+      }
+    }
+  },
+  {
     "name": "helper_route_rules_short_followup_inherits_evidence_route_state",
     "kind": "helper",
     "helper": "_route_request_by_rules",
