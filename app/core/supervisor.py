@@ -5,7 +5,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.agents.runtime_profiles import RUNTIME_PROFILES
 from app.config import AppConfig
+from app.core.module_code import read_python_module_version
 from app.core.module_loader import ModuleLoader
 from app.core.module_manifest import (
     DEFAULT_ACTIVE_MANIFEST,
@@ -211,6 +213,17 @@ class KernelSupervisor:
             return raw if raw != "policy" else "policy"
         return ""
 
+    def _expected_capabilities_for_kind(self, kind: str) -> tuple[str, ...]:
+        mapping = {
+            "router": ("route",),
+            "policy": ("normalize_route",),
+            "attachment_context": ("resolve_attachment_context", "route_state_scope"),
+            "finalizer": ("sanitize",),
+            "tool_registry": ("build_langchain_tools", "describe_tools"),
+            "provider": ("build_runner",),
+        }
+        return mapping.get(str(kind or "").strip(), ())
+
     def promote_check(self, manifest: ActiveModuleManifest) -> dict[str, Any]:
         unsafe_refs: dict[str, str] = {}
         compatibility_errors: list[dict[str, Any]] = []
@@ -228,6 +241,15 @@ class KernelSupervisor:
                 reference = self._loader.resolve_ref(ref_text, expected_kind=kind)
                 module_manifest = read_module_manifest(reference.path / "manifest.toml")
                 resolved[label] = reference.ref
+                if str(module_manifest.kind or "").strip() != kind:
+                    compatibility_errors.append(
+                        {
+                            "label": label,
+                            "category": "kind_mismatch",
+                            "expected": kind,
+                            "actual": str(module_manifest.kind or ""),
+                        }
+                    )
                 if str(module_manifest.api_version or "").strip() != "1":
                     compatibility_errors.append(
                         {
@@ -235,6 +257,39 @@ class KernelSupervisor:
                             "category": "api_version_incompatible",
                             "expected": "1",
                             "actual": str(module_manifest.api_version or ""),
+                        }
+                    )
+                missing_capabilities = [
+                    capability
+                    for capability in self._expected_capabilities_for_kind(kind)
+                    if capability not in set(module_manifest.capabilities)
+                ]
+                if missing_capabilities:
+                    compatibility_errors.append(
+                        {
+                            "label": label,
+                            "category": "capability_missing",
+                            "missing": missing_capabilities,
+                            "actual_capabilities": list(module_manifest.capabilities),
+                        }
+                    )
+                runtime_profile = str(module_manifest.runtime_profile or "").strip()
+                if runtime_profile and runtime_profile not in RUNTIME_PROFILES:
+                    compatibility_errors.append(
+                        {
+                            "label": label,
+                            "category": "runtime_profile_invalid",
+                            "runtime_profile": runtime_profile,
+                        }
+                    )
+                code_version = read_python_module_version(reference.path)
+                if code_version and code_version != str(module_manifest.version or "").strip():
+                    compatibility_errors.append(
+                        {
+                            "label": label,
+                            "category": "module_version_mismatch",
+                            "manifest_version": str(module_manifest.version or ""),
+                            "code_version": code_version,
                         }
                     )
                 for dependency in module_manifest.depends_on:

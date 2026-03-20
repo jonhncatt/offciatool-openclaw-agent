@@ -2549,6 +2549,77 @@
     }
   },
   {
+    "name": "helper_debug_role_execution_smoke_matrix",
+    "kind": "helper",
+    "helper": "_debug_role_execution_smoke_matrix",
+    "args": {},
+    "assert": {
+      "equals": {
+        "ok": true,
+        "roles.planner.ok": true,
+        "roles.reviewer.ok": true,
+        "roles.revision.ok": true,
+        "roles.structurer.ok": true,
+        "profiles.explainer.ok": true,
+        "profiles.evidence.ok": true,
+        "profiles.patch_worker.ok": true
+      },
+      "contains": {
+        "payloads.planner.objective": [
+          "解释整体思路"
+        ],
+        "payloads.reviewer.verdict": [
+          "pass"
+        ],
+        "payloads.revision.final_answer": [
+          "修订后的最终答复"
+        ],
+        "payloads.structurer.claims.0.statement": [
+          "shadow 自升级闭环"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_package_syncs_module_version",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_package_syncs_module_version",
+    "args": {},
+    "assert": {
+      "equals": {
+        "package_run.ok": true,
+        "code_version_sync.ok": true,
+        "versions_match": true
+      },
+      "contains": {
+        "packaged_ref": [
+          "router_rules@"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_promote_rejects_module_version_mismatch",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_promote_rejects_module_version_mismatch",
+    "args": {},
+    "assert": {
+      "equals": {
+        "package_run.ok": true,
+        "promote_check.ok": false,
+        "promote_check.reason": "module_version_mismatch",
+        "promotion.ok": false,
+        "promotion.reason": "module_version_mismatch",
+        "code_version": "0.0.1"
+      },
+      "contains": {
+        "promote_check.compatibility_errors.0.category": [
+          "module_version_mismatch"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

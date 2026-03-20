@@ -10,11 +10,12 @@ import tempfile
 from typing import Any
 from uuid import uuid4
 
-from app.config import AppConfig
 from app.agents.runtime_profiles import PATCH_WORKER_PROFILE
+from app.config import AppConfig
+from app.core.module_code import sync_python_module_version
 from app.core.module_loader import ModuleLoader
 from app.core.module_packager import ModulePackager
-from app.core.module_manifest import ActiveModuleManifest, write_active_manifest
+from app.core.module_manifest import ActiveModuleManifest, read_module_manifest, write_active_manifest, write_module_manifest
 from app.core.module_registry import KernelModuleRegistry
 from app.core.module_types import ModuleHealthSnapshot, ModuleRuntimeContext
 from app.core.supervisor import KernelSupervisor
@@ -391,6 +392,13 @@ class KernelRuntime:
                 "workspace_dir": str(task_dir),
                 "failure_category": str(classification.get("category") or ""),
                 "failure_reason": str(classification.get("reason") or ""),
+                "target_dependencies": [
+                    f"{dep_label}={self._manifest_ref_for_label(dep_label, shadow_manifest_dict)}"
+                    for dep_label in self._all_manifest_labels(active_manifest)
+                    if dep_label != label and self._manifest_ref_for_label(dep_label, shadow_manifest_dict)
+                ],
+                "target_api_version": "1",
+                "target_runtime_profile": "",
                 "remediation_hints": list(base_upgrade_run.get("remediation_hints") or []),
             }
             self._write_json(task_dir / "repair_task.json", task_payload)
@@ -400,6 +408,65 @@ class KernelRuntime:
             "workspace_root": str(workspace_root),
             "tasks": tasks,
         }
+
+    def _apply_patch_worker_recipes(
+        self,
+        *,
+        task_payload: dict[str, object],
+        repair_context: dict[str, object],
+        module_dir: Path,
+    ) -> list[str]:
+        actions: list[str] = []
+        manifest_path = module_dir / "manifest.toml"
+        if not manifest_path.is_file():
+            return actions
+
+        try:
+            manifest = read_module_manifest(manifest_path)
+        except Exception:
+            return actions
+
+        updated_manifest = manifest
+        failure_reason = str(repair_context.get("last_pipeline_failure", {}).get("reason") or repair_context.get("failure_reason") or "").strip()
+        failure_category = str(repair_context.get("last_pipeline_failure", {}).get("category") or repair_context.get("failure_category") or "").strip()
+        target_dependencies = tuple(
+            str(item).strip()
+            for item in (task_payload.get("target_dependencies") or [])
+            if str(item).strip()
+        )
+        target_api_version = str(task_payload.get("target_api_version") or "1").strip() or "1"
+        target_runtime_profile = str(task_payload.get("target_runtime_profile") or "").strip()
+
+        if updated_manifest.api_version != target_api_version:
+            updated_manifest = replace(updated_manifest, api_version=target_api_version)
+            actions.append(f"set api_version={target_api_version}")
+
+        dependency_reasons = {"dependency_mismatch", "invalid_dependency_entry"}
+        if target_dependencies and (
+            updated_manifest.depends_on != target_dependencies
+            or failure_reason in dependency_reasons
+            or failure_category in {"manifest_validation", "promotion_failed"}
+        ):
+            updated_manifest = replace(updated_manifest, depends_on=target_dependencies)
+            actions.append("aligned depends_on with shadow manifest")
+
+        if failure_reason == "runtime_profile_invalid" and updated_manifest.runtime_profile != target_runtime_profile:
+            updated_manifest = replace(updated_manifest, runtime_profile=target_runtime_profile)
+            actions.append(f"set runtime_profile={target_runtime_profile or '(empty)'}")
+
+        if updated_manifest != manifest:
+            write_module_manifest(manifest_path, updated_manifest)
+
+        version_sync = sync_python_module_version(module_dir, updated_manifest.version)
+        if bool(version_sync.get("ok")) and bool(version_sync.get("changed")):
+            actions.append(f"sync module.py version -> {updated_manifest.version}")
+
+        pycache_dir = module_dir / "__pycache__"
+        if pycache_dir.exists():
+            shutil.rmtree(pycache_dir)
+            actions.append("removed __pycache__")
+
+        return actions
 
     def _hash_tree(self, root: Path) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -641,6 +708,12 @@ class KernelRuntime:
                 hints.append("当前模块依赖声明和 shadow manifest 不匹配。先对齐依赖模块引用，再 promote。")
             if str(classification.get("reason") or "") == "api_version_incompatible":
                 hints.append("当前模块 manifest 的 api_version 与稳定内核不兼容，不能直接 promote。")
+            if str(classification.get("reason") or "") == "capability_missing":
+                hints.append("当前模块 manifest 的 capabilities 缺少该 kind 必需能力，先补齐再 promote。")
+            if str(classification.get("reason") or "") == "module_version_mismatch":
+                hints.append("当前模块代码里的 version 和 manifest.toml 不一致，先同步版本号再 promote。")
+            if str(classification.get("reason") or "") == "runtime_profile_invalid":
+                hints.append("当前模块 runtime_profile 非法，先改成已注册 profile 或留空。")
             hints.append("先确认 validation/smoke/replay 全部为 ok，再检查 promote 的 rollback_pointer 和 active manifest 写入权限。")
         elif category == "stage_failed":
             hints.append("先确认 shadow manifest override 是否写入了有效模块引用。")
@@ -1335,6 +1408,11 @@ class KernelRuntime:
                 repair_context["previous_round_changed_files"] = list(previous_round.get("changed_files") or [])
                 self._write_json(repair_task_path, repair_context)
                 before_hashes = self._hash_tree(module_dir)
+                recipe_actions = self._apply_patch_worker_recipes(
+                    task_payload=task_payload,
+                    repair_context=repair_context,
+                    module_dir=module_dir,
+                )
                 worker_runtime_dir = task_dir / "_runtime"
                 worker_cfg = replace(
                     self.supervisor._config,
@@ -1402,6 +1480,7 @@ class KernelRuntime:
                     "round_index": round_index,
                     "workspace_dir": str(task_dir),
                     "module_dir": str(module_dir),
+                    "recipe_actions": recipe_actions,
                     "changed_files": changed_files,
                     "tool_event_count": len(tool_events),
                     "execution_plan": execution_plan,

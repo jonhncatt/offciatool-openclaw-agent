@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 from typing import Any
 
+from app.core.module_code import sync_python_module_version
 from app.core.module_manifest import ModuleManifest, read_module_manifest, render_module_manifest_toml, version_dir_name
 from app.core.module_types import ModuleReference, ModuleRuntimeContext
 
@@ -68,6 +69,7 @@ class ModulePackager:
             path=target_dir / "manifest.toml",
         )
         (target_dir / "manifest.toml").write_text(render_module_manifest_toml(packaged_manifest), encoding="utf-8")
+        code_version_sync = sync_python_module_version(target_dir, new_version)
 
         package_meta = {
             "module_id": packaged_manifest.id,
@@ -80,6 +82,7 @@ class ModulePackager:
             "depends_on": list(packaged_manifest.depends_on),
             "packaged_at": packaged_manifest.packaged_at,
             "package_note": str(package_note or "").strip(),
+            "code_version_sync": code_version_sync,
             "metadata": dict(metadata or {}),
         }
         (target_dir / "package_meta.json").write_text(json.dumps(package_meta, ensure_ascii=False, indent=2), encoding="utf-8")

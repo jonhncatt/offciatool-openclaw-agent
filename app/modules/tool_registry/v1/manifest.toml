@@ -3,4 +3,4 @@ version = "1.0.0"
 api_version = "1"
 kind = "tool_registry"
 entrypoint = "module.py:ToolRegistryModule"
-capabilities = ["build_langchain_tools"]
+capabilities = ["build_langchain_tools", "describe_tools"]
