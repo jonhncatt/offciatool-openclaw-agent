@@ -49,6 +49,7 @@ from app.attachments import extract_document_text, image_to_data_url_with_meta, 
 from app.config import AppConfig
 from app.codex_runner import CodexResponsesRunner, build_codex_input_payload
 from app.core.bootstrap import KernelRuntime, build_kernel_runtime
+from app.core.module_manifest import read_module_manifest, write_module_manifest
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
@@ -1026,6 +1027,95 @@ class OfficeAgent:
             "roles": roles,
             "profiles": profiles,
         }
+
+    def _debug_kernel_shadow_promote_rejects_dependency_mismatch(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-dependency-") as tmp_dir:
+            root = Path(tmp_dir).resolve()
+            runtime_dir = root / "runtime"
+            modules_dir = root / "modules"
+            shutil.copytree(self.config.modules_dir, modules_dir)
+            cfg = replace(
+                self.config,
+                modules_dir=modules_dir,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            source_router_dir = modules_dir / "router_rules" / "v1"
+            runtime.stage_shadow_manifest(overrides={"router": f"path:{source_router_dir}"})
+            package_run = runtime.package_shadow_modules(labels=["router"], runtime_profile="patch_worker")
+            packaged_ref = str(((package_run.get("packaged_modules") or [{}])[0] or {}).get("packaged_ref") or "")
+            packaged_manifest_path = modules_dir / "router_rules" / "v3" / "manifest.toml"
+            packaged_manifest = read_module_manifest(packaged_manifest_path)
+            broken_manifest = type(packaged_manifest)(
+                id=packaged_manifest.id,
+                version=packaged_manifest.version,
+                api_version=packaged_manifest.api_version,
+                kind=packaged_manifest.kind,
+                entrypoint=packaged_manifest.entrypoint,
+                capabilities=packaged_manifest.capabilities,
+                depends_on=("policy=policy_resolver@999.0.0",),
+                runtime_profile=packaged_manifest.runtime_profile,
+                source_ref=packaged_manifest.source_ref,
+                packaged_at=packaged_manifest.packaged_at,
+                path=packaged_manifest.path,
+            )
+            write_module_manifest(packaged_manifest_path, broken_manifest)
+            runtime.stage_shadow_manifest(overrides={"router": packaged_ref})
+            promote_check = runtime.shadow_promote_check()
+            promotion = runtime.promote_shadow_manifest()
+            return {
+                "package_run": package_run,
+                "promote_check": promote_check,
+                "promotion": promotion,
+                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
+            }
+
+    def _debug_kernel_shadow_self_upgrade_flow(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-self-upgrade-") as tmp_dir:
+            root = Path(tmp_dir).resolve()
+            runtime_dir = root / "runtime"
+            modules_dir = root / "modules"
+            shutil.copytree(self.config.modules_dir, modules_dir)
+            cfg = replace(
+                self.config,
+                modules_dir=modules_dir,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            source_router_dir = modules_dir / "router_rules" / "v1"
+            base_pipeline = runtime.run_shadow_pipeline(
+                overrides={"router": f"path:{source_router_dir}"},
+                smoke_message="给我今天的新闻",
+                validate_provider=False,
+                replay_record=None,
+                promote_if_healthy=True,
+            )
+            self_upgrade = runtime.run_shadow_self_upgrade(
+                base_upgrade_run=base_pipeline,
+                replay_record=None,
+                smoke_message="给我今天的新闻",
+                validate_provider=False,
+                max_attempts=1,
+                max_tasks=1,
+                max_rounds=2,
+                promote_if_healthy=True,
+            )
+            return {
+                "base_pipeline": base_pipeline,
+                "self_upgrade": self_upgrade,
+                "active_manifest_after": runtime.supervisor.load_active_manifest().to_dict(),
+                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
+                "last_package_run": runtime.read_last_package_run(),
+                "last_patch_worker_run": runtime.read_last_patch_worker_run(),
+            }
 
     def _module_registry(self):
         return self._kernel_runtime.registry

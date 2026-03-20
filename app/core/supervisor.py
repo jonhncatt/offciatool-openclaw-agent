@@ -7,7 +7,14 @@ from typing import Any
 
 from app.config import AppConfig
 from app.core.module_loader import ModuleLoader
-from app.core.module_manifest import DEFAULT_ACTIVE_MANIFEST, ActiveModuleManifest, active_manifest_from_dict, read_active_manifest, write_active_manifest
+from app.core.module_manifest import (
+    DEFAULT_ACTIVE_MANIFEST,
+    ActiveModuleManifest,
+    active_manifest_from_dict,
+    read_active_manifest,
+    read_module_manifest,
+    write_active_manifest,
+)
 from app.core.module_registry import KernelModuleRegistry
 from app.core.module_types import ModuleHealthSnapshot, ModuleRuntimeContext, ModuleSelection
 
@@ -189,13 +196,80 @@ class KernelSupervisor:
     def shadow_promote_check(self) -> dict[str, Any]:
         return self.promote_check(self.load_shadow_manifest())
 
+    def _manifest_ref_for_label(self, manifest: ActiveModuleManifest, label: str) -> str:
+        raw = str(label or "").strip()
+        if raw.startswith("provider:"):
+            mode = raw.split(":", 1)[1].strip()
+            return str(manifest.providers.get(mode) or "").strip()
+        return str(getattr(manifest, raw, "") or "").strip()
+
+    def _manifest_kind_for_label(self, label: str) -> str:
+        raw = str(label or "").strip()
+        if raw.startswith("provider:"):
+            return "provider"
+        if raw in {"router", "policy", "attachment_context", "finalizer", "tool_registry"}:
+            return raw if raw != "policy" else "policy"
+        return ""
+
     def promote_check(self, manifest: ActiveModuleManifest) -> dict[str, Any]:
         unsafe_refs: dict[str, str] = {}
+        compatibility_errors: list[dict[str, Any]] = []
+        resolved: dict[str, str] = {}
 
         def collect(label: str, ref: str) -> None:
             ref_text = str(ref or "").strip()
             if ref_text.startswith("path:"):
                 unsafe_refs[label] = ref_text
+                return
+            kind = self._manifest_kind_for_label(label)
+            if not kind or not ref_text:
+                return
+            try:
+                reference = self._loader.resolve_ref(ref_text, expected_kind=kind)
+                module_manifest = read_module_manifest(reference.path / "manifest.toml")
+                resolved[label] = reference.ref
+                if str(module_manifest.api_version or "").strip() != "1":
+                    compatibility_errors.append(
+                        {
+                            "label": label,
+                            "category": "api_version_incompatible",
+                            "expected": "1",
+                            "actual": str(module_manifest.api_version or ""),
+                        }
+                    )
+                for dependency in module_manifest.depends_on:
+                    dep_text = str(dependency or "").strip()
+                    if not dep_text or "=" not in dep_text:
+                        compatibility_errors.append(
+                            {
+                                "label": label,
+                                "category": "invalid_dependency_entry",
+                                "dependency": dep_text,
+                            }
+                        )
+                        continue
+                    dep_label, dep_ref = dep_text.split("=", 1)
+                    dep_label = dep_label.strip()
+                    dep_ref = dep_ref.strip()
+                    current_ref = self._manifest_ref_for_label(manifest, dep_label)
+                    if current_ref != dep_ref:
+                        compatibility_errors.append(
+                            {
+                                "label": label,
+                                "category": "dependency_mismatch",
+                                "dependency_label": dep_label,
+                                "expected_ref": dep_ref,
+                                "actual_ref": current_ref,
+                            }
+                        )
+            except Exception as exc:
+                compatibility_errors.append(
+                    {
+                        "label": label,
+                        "category": "module_resolve_failed",
+                        "error": str(exc),
+                    }
+                )
 
         collect("router", manifest.router)
         collect("policy", manifest.policy)
@@ -210,11 +284,24 @@ class KernelSupervisor:
                 "ok": False,
                 "reason": "path_ref_not_promotable",
                 "unsafe_refs": unsafe_refs,
+                "compatibility_errors": compatibility_errors,
+                "resolved": resolved,
+            }
+        if compatibility_errors:
+            first_category = str((compatibility_errors[0] or {}).get("category") or "compatibility_error")
+            return {
+                "ok": False,
+                "reason": first_category,
+                "unsafe_refs": {},
+                "compatibility_errors": compatibility_errors,
+                "resolved": resolved,
             }
         return {
             "ok": True,
             "reason": "",
             "unsafe_refs": {},
+            "compatibility_errors": [],
+            "resolved": resolved,
         }
 
     def promote_shadow_manifest(self) -> dict[str, Any]:

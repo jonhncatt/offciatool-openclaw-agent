@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.config import AppConfig
+from app.agents.runtime_profiles import PATCH_WORKER_PROFILE
 from app.core.module_loader import ModuleLoader
 from app.core.module_packager import ModulePackager
 from app.core.module_manifest import ActiveModuleManifest, write_active_manifest
@@ -636,6 +637,10 @@ class KernelRuntime:
         elif category == "promotion_failed":
             if str(classification.get("reason") or "") == "path_ref_not_promotable":
                 hints.append("当前 shadow 还挂着 `path:` 临时模块引用。先把修好的模块变成正式版本引用，再 promote。")
+            if str(classification.get("reason") or "") == "dependency_mismatch":
+                hints.append("当前模块依赖声明和 shadow manifest 不匹配。先对齐依赖模块引用，再 promote。")
+            if str(classification.get("reason") or "") == "api_version_incompatible":
+                hints.append("当前模块 manifest 的 api_version 与稳定内核不兼容，不能直接 promote。")
             hints.append("先确认 validation/smoke/replay 全部为 ok，再检查 promote 的 rollback_pointer 和 active manifest 写入权限。")
         elif category == "stage_failed":
             hints.append("先确认 shadow manifest override 是否写入了有效模块引用。")
@@ -1272,6 +1277,7 @@ class KernelRuntime:
         replay_record: dict[str, object] | None = None,
         max_tasks: int = 1,
         max_rounds: int = 2,
+        auto_package_on_success: bool = True,
         promote_if_healthy: bool | None = None,
     ) -> dict[str, object]:
         from app.agent import OfficeAgent
@@ -1307,6 +1313,8 @@ class KernelRuntime:
         executed_tasks: list[dict[str, object]] = []
         shadow_overrides: dict[str, object] = {}
         pipeline: dict[str, object] = dict(base_pipeline)
+        package_run: dict[str, object] = {}
+        packaged_pipeline: dict[str, object] = {}
         stop_reason = "max_rounds_reached"
         previous_round: dict[str, object] = {}
 
@@ -1447,6 +1455,38 @@ class KernelRuntime:
                 stop_reason = "max_rounds_reached"
                 break
 
+        final_classification = dict(pipeline.get("failure_classification") or {}) if isinstance(pipeline.get("failure_classification"), dict) else {}
+        package_reason = str(final_classification.get("reason") or "")
+        package_category = str(final_classification.get("category") or "")
+        should_package = bool(pipeline.get("ok")) or (
+            auto_package_on_success
+            and package_category == "promotion_failed"
+            and package_reason == "path_ref_not_promotable"
+        )
+        if should_package and auto_package_on_success:
+            path_labels = [str(item.get("label") or "").strip() for item in task_items[:limit] if str(item.get("label") or "").strip()]
+            if path_labels:
+                package_run = self.package_shadow_modules(
+                    labels=path_labels,
+                    package_note="patch_worker_auto_package",
+                    source_run_id=str(pipeline.get("run_id") or ""),
+                    repair_run_id=str(repair_payload.get("run_id") or ""),
+                    patch_worker_run_id=run_id,
+                    runtime_profile=PATCH_WORKER_PROFILE.profile_id,
+                )
+                if bool(package_run.get("ok")):
+                    packaged_pipeline = self.run_shadow_pipeline(
+                        overrides={},
+                        smoke_message=smoke_message,
+                        validate_provider=validate_provider,
+                        replay_record=replay_record,
+                        promote_if_healthy=promote_flag,
+                    )
+                    pipeline = packaged_pipeline
+                    stop_reason = "packaged_pipeline_ok" if bool(packaged_pipeline.get("ok")) else "packaged_pipeline_failed"
+                else:
+                    stop_reason = "package_failed"
+
         payload = {
             "ok": bool(pipeline.get("ok")),
             "run_id": run_id,
@@ -1460,11 +1500,80 @@ class KernelRuntime:
             "executed_tasks": executed_tasks,
             "rounds": rounds,
             "round_count": len(rounds),
+            "auto_package_on_success": bool(auto_package_on_success),
+            "package_run": package_run,
+            "packaged_pipeline": packaged_pipeline,
             "pipeline": pipeline,
         }
         patch_runs_dir = self._patch_worker_runs_dir()
         self._write_json(patch_runs_dir / f"{run_id}.json", payload)
         self._write_json(self._last_patch_worker_run_path(), payload)
+        return payload
+
+    def run_shadow_self_upgrade(
+        self,
+        *,
+        base_upgrade_run: dict[str, object] | None = None,
+        replay_record: dict[str, object] | None = None,
+        smoke_message: str | None = None,
+        validate_provider: bool | None = None,
+        max_attempts: int = 1,
+        max_tasks: int = 1,
+        max_rounds: int = 2,
+        promote_if_healthy: bool = True,
+    ) -> dict[str, object]:
+        run_id = self._pipeline_run_id()
+        started_at = datetime.now(timezone.utc).isoformat()
+        repair = self.run_shadow_auto_repair(
+            base_upgrade_run=base_upgrade_run,
+            replay_record=replay_record,
+            smoke_message=smoke_message,
+            validate_provider=validate_provider,
+            promote_if_healthy=False,
+            max_attempts=max_attempts,
+        )
+        repaired_pipeline = dict(repair.get("repaired_pipeline") or {}) if isinstance(repair.get("repaired_pipeline"), dict) else {}
+        patch_worker: dict[str, object] = {}
+        promotion: dict[str, object] = {}
+        final_pipeline = repaired_pipeline
+        stop_reason = "repair_failed"
+
+        if bool(repaired_pipeline.get("ok")):
+            stop_reason = "repair_pipeline_ok"
+            if promote_if_healthy:
+                promotion = self.promote_shadow_manifest()
+                stop_reason = "promoted_after_repair" if bool(promotion.get("ok")) else "promotion_failed_after_repair"
+        elif list(repair.get("repair_tasks") or []):
+            patch_worker = self.run_shadow_patch_worker(
+                repair_run=repair,
+                replay_record=replay_record,
+                max_tasks=max_tasks,
+                max_rounds=max_rounds,
+                auto_package_on_success=True,
+                promote_if_healthy=promote_if_healthy,
+            )
+            final_pipeline = dict(
+                patch_worker.get("packaged_pipeline")
+                or patch_worker.get("pipeline")
+                or {}
+            )
+            stop_reason = str(patch_worker.get("stop_reason") or "patch_worker_completed")
+            if not promotion and isinstance(final_pipeline.get("promotion"), dict):
+                promotion = dict(final_pipeline.get("promotion") or {})
+
+        payload = {
+            "ok": bool(final_pipeline.get("ok")) and (not promote_if_healthy or bool(promotion.get("ok")) or not promotion),
+            "run_id": run_id,
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "base_upgrade_run_id": str((base_upgrade_run or {}).get("run_id") or ""),
+            "stop_reason": stop_reason,
+            "repair": repair,
+            "patch_worker": patch_worker,
+            "promotion": promotion,
+            "final_pipeline": final_pipeline,
+        }
+        self._write_json(self._upgrade_runs_dir() / f"{run_id}.self_upgrade.json", payload)
         return payload
 
 

@@ -36,6 +36,7 @@ from app.models import (
     KernelShadowPackageRequest,
     KernelShadowPatchWorkerRequest,
     KernelShadowReplayRequest,
+    KernelShadowSelfUpgradeRequest,
     KernelRuntimeResponse,
     KernelShadowSmokeRequest,
     NewSessionResponse,
@@ -620,6 +621,7 @@ def kernel_shadow_patch_worker(req: KernelShadowPatchWorkerRequest) -> KernelRun
         replay_record=replay_record if isinstance(replay_record, dict) else None,
         max_tasks=req.max_tasks,
         max_rounds=req.max_rounds,
+        auto_package_on_success=bool(req.auto_package_on_success),
         promote_if_healthy=req.promote_if_healthy,
     )
     pipeline = patch_worker.get("pipeline") if isinstance(patch_worker.get("pipeline"), dict) else {}
@@ -656,6 +658,45 @@ def kernel_shadow_package(req: KernelShadowPackageRequest) -> KernelRuntimeRespo
         detail="shadow modules 已打包为正式版本。" if package_run.get("ok") else "shadow modules 打包失败。",
         validation=validation,
         pipeline={"package_run": package_run},
+    )
+
+
+@app.post("/api/kernel/shadow/self-upgrade", response_model=KernelRuntimeResponse)
+def kernel_shadow_self_upgrade(req: KernelShadowSelfUpgradeRequest) -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    base_upgrade_run = _find_upgrade_run(req.upgrade_run_id)
+    if not isinstance(base_upgrade_run, dict):
+        return _kernel_runtime_response(
+            ok=False,
+            detail="未找到可执行 self-upgrade 的 upgrade run。",
+        )
+    replay_source_run_id = req.replay_run_id or str(base_upgrade_run.get("replay_source_run_id") or "").strip() or None
+    replay_record = _find_shadow_replay_record(replay_source_run_id)
+    self_upgrade = runtime.run_shadow_self_upgrade(
+        base_upgrade_run=base_upgrade_run,
+        replay_record=replay_record if isinstance(replay_record, dict) else None,
+        smoke_message=req.smoke_message,
+        validate_provider=req.validate_provider,
+        max_attempts=req.max_attempts,
+        max_tasks=req.max_tasks,
+        max_rounds=req.max_rounds,
+        promote_if_healthy=bool(req.promote_if_healthy),
+    )
+    final_pipeline = self_upgrade.get("final_pipeline") if isinstance(self_upgrade.get("final_pipeline"), dict) else {}
+    validation = final_pipeline.get("validation") if isinstance(final_pipeline.get("validation"), dict) else runtime.validate_shadow_manifest()
+    contracts = final_pipeline.get("contracts") if isinstance(final_pipeline.get("contracts"), dict) else {}
+    smoke = final_pipeline.get("smoke") if isinstance(final_pipeline.get("smoke"), dict) else {}
+    replay = final_pipeline.get("replay") if isinstance(final_pipeline.get("replay"), dict) else {}
+    return _kernel_runtime_response(
+        ok=bool(self_upgrade.get("ok")),
+        detail="shadow self-upgrade 已执行。",
+        validation=validation,
+        contracts=contracts,
+        smoke=smoke,
+        replay=replay,
+        pipeline={"self_upgrade": self_upgrade},
+        repair=self_upgrade.get("repair") if isinstance(self_upgrade.get("repair"), dict) else {},
+        patch_worker=self_upgrade.get("patch_worker") if isinstance(self_upgrade.get("patch_worker"), dict) else {},
     )
 
 

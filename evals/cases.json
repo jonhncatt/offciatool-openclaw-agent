@@ -2487,6 +2487,68 @@
     }
   },
   {
+    "name": "helper_debug_kernel_shadow_promote_rejects_dependency_mismatch",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_promote_rejects_dependency_mismatch",
+    "args": {},
+    "assert": {
+      "equals": {
+        "package_run.ok": true,
+        "promote_check.ok": false,
+        "promote_check.reason": "dependency_mismatch",
+        "promotion.ok": false,
+        "promotion.reason": "dependency_mismatch"
+      },
+      "contains": {
+        "promote_check.compatibility_errors.0.category": [
+          "dependency_mismatch"
+        ],
+        "promote_check.compatibility_errors.0.dependency_label": [
+          "policy"
+        ],
+        "shadow_manifest_after.router": [
+          "router_rules@"
+        ]
+      }
+    }
+  },
+  {
+    "name": "helper_debug_kernel_shadow_self_upgrade_flow",
+    "kind": "helper",
+    "helper": "_debug_kernel_shadow_self_upgrade_flow",
+    "args": {},
+    "assert": {
+      "equals": {
+        "base_pipeline.ok": false,
+        "base_pipeline.failure_classification.category": "promotion_failed",
+        "base_pipeline.failure_classification.reason": "path_ref_not_promotable",
+        "self_upgrade.ok": true,
+        "self_upgrade.patch_worker.ok": true,
+        "self_upgrade.patch_worker.package_run.ok": true,
+        "self_upgrade.stop_reason": "packaged_pipeline_ok"
+      },
+      "contains": {
+        "self_upgrade.patch_worker.package_run.packaged_modules.0.packaged_ref": [
+          "router_rules@"
+        ],
+        "active_manifest_after.router": [
+          "router_rules@"
+        ],
+        "shadow_manifest_after.router": [
+          "router_rules@"
+        ]
+      },
+      "not_contains": {
+        "active_manifest_after.router": [
+          "path:"
+        ],
+        "shadow_manifest_after.router": [
+          "path:"
+        ]
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

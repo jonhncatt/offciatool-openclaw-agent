@@ -281,6 +281,7 @@ class KernelShadowPatchWorkerRequest(BaseModel):
     replay_run_id: str | None = None
     max_tasks: int = 1
     max_rounds: int = 2
+    auto_package_on_success: bool = True
     promote_if_healthy: bool | None = None
 
 
@@ -291,6 +292,17 @@ class KernelShadowPackageRequest(BaseModel):
     repair_run_id: str | None = None
     patch_worker_run_id: str | None = None
     runtime_profile: str = ""
+
+
+class KernelShadowSelfUpgradeRequest(BaseModel):
+    upgrade_run_id: str | None = None
+    replay_run_id: str | None = None
+    smoke_message: str | None = None
+    validate_provider: bool | None = None
+    max_attempts: int = 1
+    max_tasks: int = 1
+    max_rounds: int = 2
+    promote_if_healthy: bool = True
 
 
 class KernelRuntimeResponse(BaseModel):
