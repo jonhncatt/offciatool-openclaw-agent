@@ -378,5 +378,6 @@ class KernelSupervisor:
                 "shadow_runs_dir": str(self._config.runtime_dir / "shadow_runs"),
                 "upgrade_runs_dir": str(self._config.runtime_dir / "upgrade_runs"),
                 "repair_runs_dir": str(self._config.runtime_dir / "repair_runs"),
+                "repair_workspaces_dir": str(self._config.runtime_dir / "repair_workspaces"),
             },
         )

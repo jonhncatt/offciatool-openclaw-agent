@@ -2286,6 +2286,12 @@
         "repair.applied_overrides.router": [
           "router_rules@1.0.0"
         ],
+        "repair.repair_tasks.0.label": [
+          "router"
+        ],
+        "repair.repair_tasks.0.seed_ref": [
+          "router_rules@1.0.0"
+        ],
         "shadow_manifest_after.router": [
           "router_rules@1.0.0"
         ],

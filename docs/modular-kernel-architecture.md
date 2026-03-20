@@ -119,6 +119,7 @@ flowchart TD
 - `upgrade_runs`
 - `last_repair_run`
 - `repair_runs`
+- `repair_workspaces`
 
 这意味着：
 
@@ -184,6 +185,9 @@ flowchart TD
 - 线上服务持续可用
 - 修复过程可重复
 - 错误不会把整个系统带死
+
+当前实现里，自修复还会先生成模块级 patch 工作区和 `repair_task.json`。
+后续无论是人工修还是 agent 修，都应该只处理 `repair_workspaces` 里的模块副本，而不是直接改 live 模块目录。
 
 ### 6. 版本化和可观测性
 

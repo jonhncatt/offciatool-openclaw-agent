@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 import tempfile
 from typing import Any
 from uuid import uuid4
@@ -105,6 +106,9 @@ class KernelRuntime:
 
     def _last_repair_run_path(self) -> Path:
         return self.context.runtime_dir / "last_repair_run.json"
+
+    def _repair_workspaces_dir(self) -> Path:
+        return self.context.runtime_dir / "repair_workspaces"
 
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,6 +226,105 @@ class KernelRuntime:
             if ref:
                 return (raw, ref)
         return None
+
+    def _module_kind_for_label(self, label: str) -> str:
+        raw = str(label or "").strip()
+        if raw.startswith("provider:"):
+            return "provider"
+        if raw in {"router", "policy", "attachment_context", "finalizer", "tool_registry"}:
+            return raw if raw != "policy" else "policy"
+        return ""
+
+    def _manifest_ref_for_label(self, label: str, manifest_dict: dict[str, object]) -> str:
+        raw = str(label or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith("provider:"):
+            mode = raw.split(":", 1)[1].strip()
+            providers = manifest_dict.get("providers")
+            if isinstance(providers, dict):
+                return str(providers.get(mode) or "").strip()
+            return ""
+        return str(manifest_dict.get(raw) or "").strip()
+
+    def _prepare_repair_tasks(
+        self,
+        *,
+        repair_run_id: str,
+        classification: dict[str, object],
+        base_upgrade_run: dict[str, object],
+    ) -> dict[str, object]:
+        workspace_root = self._repair_workspaces_dir() / repair_run_id
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        stage_payload = base_upgrade_run.get("stage")
+        stage_payload = dict(stage_payload) if isinstance(stage_payload, dict) else {}
+        shadow_manifest_dict = stage_payload.get("shadow_manifest")
+        shadow_manifest_dict = dict(shadow_manifest_dict) if isinstance(shadow_manifest_dict, dict) else self.load_shadow_manifest().to_dict()
+        active_manifest = self.supervisor.load_active_manifest()
+        labels = [str(item).strip() for item in classification.get("blocking_modules") or [] if str(item).strip()]
+        tasks: list[dict[str, object]] = []
+
+        for label in labels:
+            kind = self._module_kind_for_label(label)
+            requested_ref = self._manifest_ref_for_label(label, shadow_manifest_dict)
+            seed_ref = requested_ref
+            seed_source = "shadow"
+            reference = None
+            if kind and requested_ref:
+                try:
+                    reference = self.loader.resolve_ref(requested_ref, expected_kind=kind)
+                except Exception:
+                    reference = None
+            if reference is None:
+                fallback = self._safe_active_override_for_label(label, active_manifest)
+                if fallback is not None:
+                    _, active_ref = fallback
+                    seed_ref = active_ref
+                    seed_source = "active"
+                    if kind and seed_ref:
+                        try:
+                            reference = self.loader.resolve_ref(seed_ref, expected_kind=kind)
+                        except Exception:
+                            reference = None
+
+            task_dir = workspace_root / label.replace(":", "__")
+            task_dir.mkdir(parents=True, exist_ok=True)
+            seed_path = ""
+            if reference is not None:
+                seed_path = str(reference.path)
+                module_copy_dir = task_dir / "module"
+                if module_copy_dir.exists():
+                    shutil.rmtree(module_copy_dir)
+                shutil.copytree(reference.path, module_copy_dir)
+            task_payload: dict[str, object] = {
+                "label": label,
+                "kind": kind,
+                "requested_ref": requested_ref,
+                "seed_ref": seed_ref,
+                "seed_source": seed_source,
+                "seed_path": seed_path,
+                "workspace_dir": str(task_dir),
+                "failure_category": str(classification.get("category") or ""),
+                "failure_reason": str(classification.get("reason") or ""),
+                "remediation_hints": list(base_upgrade_run.get("remediation_hints") or []),
+            }
+            self._write_json(task_dir / "repair_task.json", task_payload)
+            tasks.append(task_payload)
+
+        return {
+            "workspace_root": str(workspace_root),
+            "tasks": tasks,
+        }
+
+    def _build_contract_check(self, *, label: str, ok: bool, kind: str, detail: str = "", **extra: object) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "label": label,
+            "kind": kind,
+            "ok": bool(ok),
+            "detail": str(detail or ""),
+        }
+        payload.update(extra)
+        return payload
 
     def _classify_pipeline_failure(
         self,
@@ -535,10 +638,193 @@ class KernelRuntime:
         return payload
 
     def run_shadow_contracts(self) -> dict[str, object]:
+        from app.agent import OfficeAgent
+        from app.models import ChatSettings
+
         shadow_manifest = self.load_shadow_manifest()
-        payload = self.supervisor.probe_manifest_contracts(shadow_manifest)
-        payload["shadow_manifest"] = shadow_manifest.to_dict()
-        payload["checked_at"] = datetime.now(timezone.utc).isoformat()
+        probe = self.supervisor.probe_manifest_contracts(shadow_manifest)
+        checks: list[dict[str, object]] = []
+        payload: dict[str, object] = {
+            "ok": bool(probe.get("ok")),
+            "shadow_manifest": shadow_manifest.to_dict(),
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "probe": probe,
+            "checks": checks,
+        }
+        if not bool(probe.get("ok")):
+            return payload
+
+        run_id = self._pipeline_run_id()
+        run_dir = self.context.runtime_dir / "shadow_runs" / f"contracts-{run_id}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        contract_config = replace(
+            self.supervisor._config,
+            runtime_dir=run_dir,
+            active_manifest_path=run_dir / "active_manifest.json",
+            shadow_manifest_path=run_dir / "shadow_manifest.json",
+            rollback_pointer_path=run_dir / "rollback_pointer.json",
+            module_health_path=run_dir / "module_health.json",
+        )
+        write_active_manifest(contract_config.active_manifest_path, shadow_manifest)
+        write_active_manifest(contract_config.shadow_manifest_path, shadow_manifest)
+        contract_runtime = build_kernel_runtime(contract_config)
+        contract_agent = OfficeAgent(contract_config, kernel_runtime=contract_runtime)
+        settings = ChatSettings()
+        route: dict[str, object] = {}
+
+        try:
+            route = contract_agent._route_request_by_rules(
+                user_message="给我今天的新闻",
+                attachment_metas=[],
+                settings=settings,
+            )
+            checks.append(
+                self._build_contract_check(
+                    label="router",
+                    kind="router",
+                    ok=bool(str(route.get("task_type") or "").strip()),
+                    detail=str(route.get("task_type") or ""),
+                    resolved_ref=str((contract_runtime.registry.selected_refs or {}).get("router") or ""),
+                    task_type=str(route.get("task_type") or ""),
+                    execution_policy=str(route.get("execution_policy") or ""),
+                )
+            )
+        except Exception as exc:
+            checks.append(self._build_contract_check(label="router", kind="router", ok=False, detail=str(exc)))
+
+        try:
+            route_input = route if isinstance(route, dict) and route else {
+                "task_type": "simple_qa",
+                "execution_policy": "qa_direct",
+                "use_worker_tools": False,
+            }
+            normalized = contract_agent._normalize_route_decision_impl(route=route_input, fallback=route_input, settings=settings)
+            checks.append(
+                self._build_contract_check(
+                    label="policy",
+                    kind="policy",
+                    ok=bool(str(normalized.get("execution_policy") or "").strip()),
+                    detail=str(normalized.get("execution_policy") or ""),
+                    resolved_ref=str((contract_runtime.registry.selected_refs or {}).get("policy") or ""),
+                )
+            )
+        except Exception as exc:
+            checks.append(self._build_contract_check(label="policy", kind="policy", ok=False, detail=str(exc)))
+
+        try:
+            attachment_module = contract_runtime.registry.attachment_context
+            session = {
+                "id": "contract-session",
+                "summary": "",
+                "turns": [],
+                "active_attachment_ids": [],
+                "route_state": {},
+                "attachment_route_states": {},
+            }
+            ctx = attachment_module.resolve_attachment_context(session=session, message="继续解释一下", requested_attachment_ids=None)
+            attachment_module.apply_attachment_context_result(
+                session=session,
+                resolved_attachment_ids=[],
+                attachment_context_mode=str(ctx.get("attachment_context_mode") or "none"),
+                clear_attachment_context=False,
+                requested_attachment_ids=ctx.get("requested_attachment_ids"),
+            )
+            scoped_state, scope = attachment_module.resolve_scoped_route_state(session=session, attachment_ids=[])
+            attachment_module.store_scoped_route_state(session=session, attachment_ids=[], route_state={"primary_intent": "qa"})
+            checks.append(
+                self._build_contract_check(
+                    label="attachment_context",
+                    kind="attachment_context",
+                    ok=True,
+                    detail=str(scope or ""),
+                    resolved_ref=str((contract_runtime.registry.selected_refs or {}).get("attachment_context") or ""),
+                    route_state_scope=str(scope or ""),
+                    resolved_state_keys=sorted(scoped_state.keys()) if isinstance(scoped_state, dict) else [],
+                )
+            )
+        except Exception as exc:
+            checks.append(self._build_contract_check(label="attachment_context", kind="attachment_context", ok=False, detail=str(exc)))
+
+        try:
+            sanitized = contract_agent._sanitize_final_answer_text(
+                '{"rows":[{"姓名":"张三","分数":95},{"姓名":"李四","分数":88}]}',
+                user_message="把数据整理成表格",
+                attachment_metas=[],
+            )
+            checks.append(
+                self._build_contract_check(
+                    label="finalizer",
+                    kind="finalizer",
+                    ok="| 姓名 | 分数 |" in str(sanitized),
+                    detail=str(sanitized)[:120],
+                    resolved_ref=str((contract_runtime.registry.selected_refs or {}).get("finalizer") or ""),
+                )
+            )
+        except Exception as exc:
+            checks.append(self._build_contract_check(label="finalizer", kind="finalizer", ok=False, detail=str(exc)))
+
+        try:
+            tool_registry = contract_runtime.registry.tool_registry
+            tools = tool_registry.build_langchain_tools(agent=contract_agent)
+            checks.append(
+                self._build_contract_check(
+                    label="tool_registry",
+                    kind="tool_registry",
+                    ok=bool(tools),
+                    detail=f"tool_count={len(tools)}",
+                    resolved_ref=str((contract_runtime.registry.selected_refs or {}).get("tool_registry") or ""),
+                    tool_count=len(tools),
+                )
+            )
+        except Exception as exc:
+            checks.append(self._build_contract_check(label="tool_registry", kind="tool_registry", ok=False, detail=str(exc)))
+
+        auth_summary = contract_agent._debug_openai_auth_summary()
+        for mode in sorted((contract_runtime.registry.providers or {}).keys()):
+            provider = contract_runtime.registry.providers.get(mode)
+            label = f"provider:{mode}"
+            try:
+                if mode == "api_key":
+                    auth = contract_agent._auth_manager._resolve_api_key_auth()
+                elif mode == "codex_auth":
+                    auth = contract_agent._auth_manager._resolve_codex_auth()
+                else:
+                    auth = contract_agent._auth_manager.resolve()
+                if not bool(getattr(auth, "available", False)):
+                    raise RuntimeError(str(getattr(auth, "reason", "") or f"{mode} auth unavailable"))
+                runner = provider.build_runner(  # type: ignore[union-attr]
+                    agent=contract_agent,
+                    auth=auth,
+                    model=contract_config.default_model,
+                    max_output_tokens=64,
+                    use_responses_api=False,
+                )
+                checks.append(
+                    self._build_contract_check(
+                        label=label,
+                        kind="provider",
+                        ok=True,
+                        detail=runner.__class__.__name__,
+                        resolved_ref=str((contract_runtime.registry.selected_refs or {}).get(f"provider:{mode}") or ""),
+                        runner_class=runner.__class__.__name__,
+                    )
+                )
+            except Exception as exc:
+                mode_matches = str(auth_summary.get("mode") or "").strip() == mode
+                available = bool(auth_summary.get("available"))
+                skipped = not (mode_matches and available)
+                checks.append(
+                    self._build_contract_check(
+                        label=label,
+                        kind="provider",
+                        ok=skipped,
+                        detail=str(exc),
+                        resolved_ref=str((contract_runtime.registry.selected_refs or {}).get(f"provider:{mode}") or ""),
+                        skipped=skipped,
+                    )
+                )
+
+        payload["ok"] = bool(probe.get("ok")) and all(bool(item.get("ok")) for item in checks)
         return payload
 
     def run_shadow_pipeline(
@@ -746,6 +1032,13 @@ class KernelRuntime:
             "attempts": attempts,
             "repaired_pipeline": current_base if isinstance(current_base, dict) else {},
         }
+        patch_workspace = self._prepare_repair_tasks(
+            repair_run_id=repair_run_id,
+            classification=classification if classification else current_base.get("failure_classification") if isinstance(current_base, dict) else {},
+            base_upgrade_run=base,
+        )
+        payload["repair_workspace_root"] = str(patch_workspace.get("workspace_root") or "")
+        payload["repair_tasks"] = list(patch_workspace.get("tasks") or [])
         self._write_json(self._repair_runs_dir() / f"{repair_run_id}.json", payload)
         self._write_json(self._last_repair_run_path(), payload)
         return payload
