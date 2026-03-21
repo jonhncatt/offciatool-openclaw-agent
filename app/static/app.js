@@ -66,6 +66,8 @@ const roleBoardLegend = document.getElementById("roleBoardLegend");
 const roleLabRuntimeMeta = document.getElementById("roleLabRuntimeMeta");
 const roleLabRuntimeMetrics = document.getElementById("roleLabRuntimeMetrics");
 const roleLabRegistry = document.getElementById("roleLabRegistry");
+const roleLabRunGraph = document.getElementById("roleLabRunGraph");
+const roleLabRunFailures = document.getElementById("roleLabRunFailures");
 const runtimeDebugSections = Array.from(document.querySelectorAll(".runtime-panel .debug-only"));
 
 const RUN_FLOW_STEPS = [
@@ -1441,6 +1443,129 @@ function renderEvolutionFeed(events = []) {
   });
 }
 
+function renderRoleLabRunGraph(lastRun = {}) {
+  if (!roleLabRunGraph || !roleLabRunFailures) return;
+  const nodes = Array.isArray(lastRun?.nodes) ? lastRun.nodes : [];
+  const instances = Array.isArray(lastRun?.instances) ? lastRun.instances : [];
+  const events = Array.isArray(lastRun?.events) ? lastRun.events : [];
+  roleLabRunGraph.innerHTML = "";
+  roleLabRunFailures.innerHTML = "";
+
+  if (!nodes.length) {
+    roleLabRunGraph.textContent = "最近还没有运行图。";
+    roleLabRunFailures.textContent = "最近还没有局部失败。";
+    return;
+  }
+
+  const nodeMap = new Map();
+  const children = new Map();
+  nodes.forEach((node) => {
+    const id = String(node?.node_id || "").trim();
+    if (!id) return;
+    nodeMap.set(id, node);
+    const parentId = String(node?.parent_node_id || "").trim();
+    if (!children.has(parentId)) children.set(parentId, []);
+    children.get(parentId).push(node);
+  });
+
+  const instanceMap = new Map();
+  instances.forEach((item) => {
+    const nodeId = String(item?.node_id || "").trim();
+    if (!nodeId) return;
+    const list = instanceMap.get(nodeId) || [];
+    list.push(item);
+    instanceMap.set(nodeId, list);
+  });
+
+  const preferredRoots = nodes.filter((node) => {
+    const parentId = String(node?.parent_node_id || "").trim();
+    return !parentId || !nodeMap.has(parentId);
+  });
+  const roots = preferredRoots.length ? preferredRoots : nodes.slice(0, 1);
+
+  const labelForNode = (node) => {
+    const nodeType = String(node?.node_type || "role").trim();
+    const meta = node?.meta || {};
+    if (nodeType === "join") return "join";
+    if (nodeType === "branch") {
+      const toolName = String(meta?.tool_name || "").trim();
+      return toolName ? `tool:${toolName}` : String(node?.phase || "branch");
+    }
+    return String(node?.role || "-");
+  };
+
+  const renderNode = (node, depth = 0) => {
+    const nodeType = String(node?.node_type || "role").trim();
+    const status = String(node?.status || "pending").trim();
+    const attempts = Number(node?.attempts || 0);
+    const meta = node?.meta || {};
+    const item = document.createElement("article");
+    item.className = `runtime-graph-node ${nodeType} ${status}`;
+    item.style.setProperty("--depth", String(depth));
+    const tags = [];
+    if (attempts > 1) tags.push(`retry=${attempts - 1}`);
+    if (meta?.synthetic) tags.push("synthetic");
+    if (meta?.batch_index) tags.push(`slot=${meta.batch_index}`);
+    if (meta?.failed_branches > 0) tags.push(`failed=${meta.failed_branches}`);
+    const relatedInstances = instanceMap.get(String(node?.node_id || "").trim()) || [];
+    if (relatedInstances.length) {
+      const lastInstance = relatedInstances[relatedInstances.length - 1] || {};
+      tags.push(String(lastInstance?.instance_id || "").trim());
+    }
+    item.innerHTML = `
+      <div class="runtime-graph-line">
+        <span class="runtime-graph-dot ${status}"></span>
+        <span class="runtime-graph-label">${labelForNode(node)}</span>
+        <span class="runtime-graph-phase">${String(node?.phase || "-")}</span>
+      </div>
+      <div class="runtime-graph-meta">
+        <span>${status}</span>
+        ${tags.map((tag) => `<span>${tag}</span>`).join("")}
+      </div>
+      ${
+        String(node?.summary || "").trim()
+          ? `<div class="runtime-graph-summary">${String(node.summary).trim()}</div>`
+          : ""
+      }
+      ${
+        String(node?.error || "").trim()
+          ? `<div class="runtime-graph-error">${String(node.error).trim()}</div>`
+          : ""
+      }
+    `;
+    roleLabRunGraph.appendChild(item);
+    (children.get(String(node?.node_id || "").trim()) || []).forEach((child) => renderNode(child, depth + 1));
+  };
+
+  roots.forEach((node) => renderNode(node, 0));
+
+  const failureEvents = events.filter((item) => {
+    const kind = String(item?.kind || "").trim();
+    return kind === "worker_tool_retry_scheduled" || kind === "node_failed" || kind === "role_failed";
+  });
+  if (!failureEvents.length) {
+    roleLabRunFailures.textContent = "最近还没有局部失败。";
+    return;
+  }
+  failureEvents.slice(-8).reverse().forEach((event) => {
+    const row = document.createElement("div");
+    row.className = "runtime-failure-row";
+    const kind = String(event?.kind || "").trim();
+    const label =
+      kind === "worker_tool_retry_scheduled"
+        ? `retry · ${String(event?.tool_name || "-")}`
+        : `${kind} · ${String(event?.role || event?.tool_name || "-")}`;
+    row.innerHTML = `
+      <div class="runtime-failure-head">
+        <span>${label}</span>
+        <span>${formatRelativeTime(event?.ts)}</span>
+      </div>
+      <div class="runtime-failure-detail">${String(event?.error || event?.summary || event?.branch_group || "-")}</div>
+    `;
+    roleLabRunFailures.appendChild(row);
+  });
+}
+
 function renderRoleLabRuntime(health = {}) {
   if (!roleLabRuntimeMetrics || !roleLabRegistry) return;
   const runtime = health?.role_lab_runtime || {};
@@ -1451,17 +1576,18 @@ function renderRoleLabRuntime(health = {}) {
   const registryRoles = Array.isArray(registry?.roles) ? registry.roles : [];
 
   if (roleLabRuntimeMeta) {
-    roleLabRuntimeMeta.textContent = `${Number(registry?.registered_roles || 0)} registered · ${Number(readiness?.executable_role_count || 0)} controller-backed`;
+    roleLabRuntimeMeta.textContent = `${Number(registry?.registered_roles || 0)} registered · ${Number(readiness?.controller_backed_role_count || 0)} controller-backed`;
   }
 
   renderKernelStatGrid(roleLabRuntimeMetrics, [
     { label: "Stage 4 Trial", value: readiness?.ready_for_stage4_trial ? "READY" : "PREP", meta: String(readiness?.next_focus || "runtime abstraction") },
-    { label: "Coverage", value: `${Number(readiness?.executable_role_count || 0)}/${Number(registry?.registered_roles || 0)}`, meta: "controller-backed / registered" },
+    { label: "Coverage", value: `${Number(readiness?.controller_backed_role_count || 0)}/${Number(registry?.registered_roles || 0)}`, meta: "controller-backed / registered" },
     { label: "Multi Instance", value: String(readiness?.multi_instance_role_count || 0), meta: "roles can spawn same-type instances" },
     { label: "Parent/Child", value: String(readiness?.parent_child_role_count || 0), meta: "roles support task parent-child graph" },
     { label: "Last Run", value: String(runMeta?.status || "-").toUpperCase(), meta: `instances=${Number(runMeta?.instance_count || 0)} · nodes=${Number(runMeta?.node_count || 0)}` },
     { label: "Current Role", value: String(lastRun?.current_role || "-"), meta: String((lastRun?.active_roles || []).join(", ") || "idle") },
   ]);
+  renderRoleLabRunGraph(lastRun);
 
   roleLabRegistry.innerHTML = "";
   if (!registryRoles.length) {

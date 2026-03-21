@@ -8,6 +8,7 @@ from typing import Any, Literal
 RoleKind = Literal["agent", "processor", "hybrid"]
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 InstanceStatus = Literal["idle", "running", "completed", "failed", "cancelled"]
+NodeType = Literal["role", "branch", "join"]
 
 
 @dataclass(slots=True)
@@ -117,6 +118,7 @@ class TaskNode:
     node_id: str
     role: str
     role_kind: RoleKind = "agent"
+    node_type: NodeType = "role"
     parent_node_id: str | None = None
     status: TaskStatus = "pending"
     phase: str = ""
@@ -198,6 +200,7 @@ class RunState:
         node_id: str,
         role: str,
         role_kind: RoleKind = "agent",
+        node_type: NodeType = "role",
         parent_node_id: str | None = None,
         phase: str = "",
         meta: dict[str, Any] | None = None,
@@ -210,6 +213,7 @@ class RunState:
             node_id=node_id,
             role=role,
             role_kind=role_kind,
+            node_type=node_type,
             parent_node_id=parent,
             phase=phase,
             meta=dict(meta or {}),
@@ -221,11 +225,110 @@ class RunState:
                 "kind": "node_added",
                 "node_id": node_id,
                 "role": role,
+                "node_type": node_type,
                 "parent_node_id": parent,
                 "phase": phase,
             }
         )
         return node
+
+    def begin_node(
+        self,
+        *,
+        node_id: str,
+        role: str,
+        role_kind: RoleKind = "processor",
+        node_type: NodeType = "branch",
+        parent_node_id: str | None = None,
+        phase: str = "",
+        meta: dict[str, Any] | None = None,
+    ) -> TaskNode:
+        now = time.time()
+        node = self.nodes.get(node_id)
+        if node is None:
+            node = self.add_node(
+                node_id=node_id,
+                role=role,
+                role_kind=role_kind,
+                node_type=node_type,
+                parent_node_id=parent_node_id,
+                phase=phase,
+                meta=meta,
+            )
+        else:
+            node.role = role
+            node.role_kind = role_kind
+            node.node_type = node_type
+            if parent_node_id is not None:
+                node.parent_node_id = parent_node_id
+            if phase:
+                node.phase = phase
+            if meta:
+                node.meta.update(dict(meta))
+        node.status = "running"
+        node.started_at = node.started_at or now
+        node.ended_at = 0.0
+        node.error = ""
+        node.attempts = max(1, int(node.attempts) + 1 if node.attempts else 1)
+        self.events.append(
+            {
+                "ts": now,
+                "kind": "node_started",
+                "node_id": node.node_id,
+                "role": node.role,
+                "node_type": node.node_type,
+                "parent_node_id": node.parent_node_id,
+                "phase": node.phase,
+                "attempts": node.attempts,
+            }
+        )
+        return node
+
+    def complete_node(self, node_id: str, *, summary: str = "", meta: dict[str, Any] | None = None) -> None:
+        node = self.nodes.get(node_id)
+        if node is None:
+            return
+        now = time.time()
+        node.status = "completed"
+        node.ended_at = now
+        if summary:
+            node.summary = str(summary).strip()
+        if meta:
+            node.meta.update(dict(meta))
+        self.events.append(
+            {
+                "ts": now,
+                "kind": "node_completed",
+                "node_id": node.node_id,
+                "role": node.role,
+                "node_type": node.node_type,
+                "summary": node.summary,
+                "attempts": node.attempts,
+            }
+        )
+
+    def fail_node(self, node_id: str, *, error: str = "", meta: dict[str, Any] | None = None) -> None:
+        node = self.nodes.get(node_id)
+        if node is None:
+            return
+        now = time.time()
+        err = str(error or "").strip()
+        node.status = "failed"
+        node.ended_at = now
+        node.error = err
+        if meta:
+            node.meta.update(dict(meta))
+        self.events.append(
+            {
+                "ts": now,
+                "kind": "node_failed",
+                "node_id": node.node_id,
+                "role": node.role,
+                "node_type": node.node_type,
+                "error": err,
+                "attempts": node.attempts,
+            }
+        )
 
     def start_instance(
         self,

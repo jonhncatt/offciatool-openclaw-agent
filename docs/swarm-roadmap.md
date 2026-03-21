@@ -265,13 +265,14 @@
 - `runtime_controller.execute_batch()` 已能调度同类 role 的多实例执行
 - `_debug_role_lab_multi_instance_batch()` 已验证 `researcher#1 / researcher#2` 双实例批处理
 - 主链路已加入真实试点：当 `Role-Agent Lab` 处理多附件且命中 `file_reader` 场景时，会为多个附件并行生成子简报，再合并回主流程
+- `Worker` 已开始记录工具分支子节点：同一轮工具调用现在会在 runtime 中留下 `branch / join` 节点，以及局部失败 / 局部重试痕迹
 - `/api/health` 与 `/api/role-lab/runtime` 已能看到 controller 覆盖率、stage 4 readiness、最近一轮节点 / 实例快照
 
 阶段 4 剩余工作：
 
 - 把 `Worker` 的子任务拆分也纳入真正的多实例分发
-- 为并行分支补更清晰的 branch / join UI
-- 明确局部失败后的重试与回退策略
+- 把当前工具级 `branch / join` 扩展到真实的多 `worker` 子任务
+- 继续强化局部失败后的重试与回退策略
 
 ## 阶段 5：并行分支
 

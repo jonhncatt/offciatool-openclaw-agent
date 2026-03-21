@@ -826,6 +826,99 @@ class OfficeAgent:
         finally:
             registry_role.handler = original_handler
 
+    def _debug_role_lab_worker_branch_graph(self) -> dict[str, Any]:
+        run_state = RunState.create(
+            run_id=f"role_lab_worker_graph_{int(time.time() * 1000)}",
+            session_id="session-role-lab-worker-graph",
+            task_type="role_lab_worker_graph",
+            root_role="coordinator",
+            root_role_kind="processor",
+            meta={"profile": "role_agent_lab"},
+        )
+        worker_execution = self._role_runtime_controller.begin_managed(
+            role="worker",
+            run_state=run_state,
+            parent_node_id=run_state.root_node_id,
+            phase="attempt_1",
+            tool_mode="uses_tools",
+            meta={"attempt": 1, "debug": True},
+        )
+        branch_group = f"{worker_execution.node_id}:tool_batch:1"
+        branch_ok = self._role_runtime_controller.begin_task_node(
+            run_state=run_state,
+            role="worker",
+            parent_node_id=worker_execution.node_id,
+            phase="tool_call:read_text_file",
+            role_kind="processor",
+            node_type="branch",
+            meta={"branch_group": branch_group, "tool_name": "read_text_file", "batch_index": 1},
+        )
+        self._role_runtime_controller.complete_task_node(
+            branch_ok,
+            run_state=run_state,
+            summary="read_text_file completed",
+        )
+        branch_retry = self._role_runtime_controller.begin_task_node(
+            run_state=run_state,
+            role="worker",
+            parent_node_id=worker_execution.node_id,
+            phase="tool_call:search_web",
+            role_kind="processor",
+            node_type="branch",
+            meta={"branch_group": branch_group, "tool_name": "search_web", "batch_index": 2},
+        )
+        self._role_runtime_controller.begin_task_node(
+            run_state=run_state,
+            role="worker",
+            parent_node_id=worker_execution.node_id,
+            phase="tool_call:search_web",
+            role_kind="processor",
+            node_type="branch",
+            meta={"branch_group": branch_group, "tool_name": "search_web", "batch_index": 2, "retry_attempt": 2},
+            node_id=branch_retry,
+        )
+        self._role_runtime_controller.fail_task_node(
+            branch_retry,
+            run_state=run_state,
+            error="timeout while searching web",
+            meta={"retry_count": 1},
+        )
+        join_node = self._role_runtime_controller.begin_task_node(
+            run_state=run_state,
+            role="worker",
+            parent_node_id=worker_execution.node_id,
+            phase="tool_join",
+            role_kind="processor",
+            node_type="join",
+            meta={"branch_group": branch_group, "branch_count": 2, "failed_branches": 1},
+        )
+        self._role_runtime_controller.complete_task_node(
+            join_node,
+            run_state=run_state,
+            summary="joined 2 tool branches",
+            meta={"branch_group": branch_group, "branch_count": 2, "failed_branches": 1},
+        )
+        self._role_runtime_controller.complete_managed(
+            worker_execution,
+            run_state=run_state,
+            summary="worker graph demo completed",
+        )
+        run_state.finish(status="completed")
+        snapshot = self._role_runtime_controller.capture_run_state(run_state)
+        nodes = list(snapshot.get("nodes") or [])
+        return {
+            "ok": True,
+            "stage4_readiness": self._role_runtime_controller.stage4_readiness(),
+            "runtime": snapshot,
+            "branch_node_count": sum(1 for item in nodes if str(item.get("node_type") or "") == "branch"),
+            "join_node_count": sum(1 for item in nodes if str(item.get("node_type") or "") == "join"),
+            "failed_branch_count": sum(
+                1
+                for item in nodes
+                if str(item.get("node_type") or "") == "branch" and str(item.get("status") or "") == "failed"
+            ),
+        }
+
     def _should_role_lab_parallelize_specialist(
         self,
         specialist: str,
@@ -913,6 +1006,50 @@ class OfficeAgent:
             output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
         )
         return self._make_role_result(spec, base_context, payload, raw_text)
+
+    def _should_retry_worker_tool_result(
+        self,
+        *,
+        tool_name: str,
+        result: dict[str, Any],
+        attempt: int,
+    ) -> tuple[bool, str]:
+        if attempt >= 2:
+            return False, ""
+        if not isinstance(result, dict):
+            return False, ""
+        if bool(result.get("ok", True)):
+            return False, ""
+        error_text = str(result.get("error") or result.get("detail") or "").strip().lower()
+        if not error_text:
+            return False, ""
+        retryable_hints = (
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "temporary failure",
+            "connection reset",
+            "connection aborted",
+            "connection error",
+            "tls verify failed",
+            "service unavailable",
+            "502",
+            "503",
+            "504",
+        )
+        retryable_tools = {
+            "fetch_web",
+            "search_web",
+            "download_web_file",
+            "run_shell",
+            "read_text_file",
+            "search_codebase",
+        }
+        if str(tool_name or "").strip() not in retryable_tools:
+            return False, ""
+        if any(hint in error_text for hint in retryable_hints):
+            return True, f"{tool_name} 命中可重试错误，Coordinator 已安排局部重试。"
+        return False, ""
 
     def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
         return debug_kernel_shadow_upgrade_flow_helper(self, target_router_ref)
@@ -2092,12 +2229,15 @@ class OfficeAgent:
             ),
         )
 
+        latest_worker_node_id = ""
+
         def invoke_worker_turn(
             *,
             title: str,
             model: str,
             current_runner: Any | None = None,
         ) -> tuple[Any, Any, str, list[str]]:
+            nonlocal latest_worker_node_id
             if execution_state.attempts >= execution_state.max_attempts:
                 execution_state.status = "attempt_limit_reached"
                 execution_state.transitions.append("attempt_limit_reached")
@@ -2128,6 +2268,7 @@ class OfficeAgent:
                 tool_mode=execution_state.tool_mode,
                 meta={"attempt": execution_state.attempts},
             )
+            latest_worker_node_id = worker_node_id
             set_role_activity(
                 "coordinator",
                 "worker",
@@ -2799,20 +2940,117 @@ class OfficeAgent:
 
             messages.append(ai_msg)
             batch_has_read_text_call = any(str(call.get("name") or "") == "read_text_file" for call in tool_calls)
-            for call in tool_calls:
+            worker_tool_branch_group = (
+                f"{latest_worker_node_id or coordinator_node_id or 'worker'}:tool_batch:{execution_state.attempts}"
+            )
+            executed_tool_branch_ids: list[str] = []
+            branch_failures = 0
+            branch_count = 0
+            for call_index, call in enumerate(tool_calls, start=1):
                 name = call.get("name") or "unknown"
                 arguments = call.get("args") or {}
                 if not isinstance(arguments, dict):
                     arguments = {}
-
-                result = self.tools.execute(name, arguments)
                 call_id = call.get("id") or f"call_{len(tool_events)}"
+                tool_branch_node_id = ""
+                if run_state is not None and latest_worker_node_id:
+                    tool_branch_node_id = self._role_runtime_controller.begin_task_node(
+                        run_state=run_state,
+                        role="worker",
+                        parent_node_id=latest_worker_node_id,
+                        phase=f"tool_call:{name}",
+                        role_kind="processor",
+                        node_type="branch",
+                        meta={
+                            "branch_group": worker_tool_branch_group,
+                            "call_id": call_id,
+                            "tool_name": name,
+                            "tool_args": dict(arguments),
+                            "batch_index": call_index,
+                            "synthetic": False,
+                        },
+                    )
+                    executed_tool_branch_ids.append(tool_branch_node_id)
+                branch_count += 1
+                branch_attempt = 0
+                retry_scheduled = False
+                while True:
+                    branch_attempt += 1
+                    if tool_branch_node_id and run_state is not None and branch_attempt > 1:
+                        self._role_runtime_controller.begin_task_node(
+                            run_state=run_state,
+                            role="worker",
+                            parent_node_id=latest_worker_node_id,
+                            phase=f"tool_call:{name}",
+                            role_kind="processor",
+                            node_type="branch",
+                            meta={
+                                "branch_group": worker_tool_branch_group,
+                                "call_id": call_id,
+                                "tool_name": name,
+                                "tool_args": dict(arguments),
+                                "batch_index": call_index,
+                                "retry_attempt": branch_attempt,
+                                "synthetic": False,
+                            },
+                            node_id=tool_branch_node_id,
+                        )
+                    result = self.tools.execute(name, arguments)
+                    should_retry_tool, retry_trace = self._should_retry_worker_tool_result(
+                        tool_name=str(name),
+                        result=result,
+                        attempt=branch_attempt,
+                    )
+                    if should_retry_tool:
+                        retry_scheduled = True
+                        add_trace(retry_trace)
+                        add_run_event(
+                            "worker_tool_retry_scheduled",
+                            node_id=tool_branch_node_id,
+                            tool_name=name,
+                            call_id=call_id,
+                            branch_group=worker_tool_branch_group,
+                            retry_attempt=branch_attempt,
+                            error=self._shorten(str(result.get("error") or ""), 220),
+                        )
+                        continue
+                    break
+
                 append_tool_result_message(
                     name=name,
                     arguments=arguments,
                     result=result,
                     call_id=call_id,
                 )
+                tool_ok = bool(result.get("ok", True))
+                if tool_branch_node_id and run_state is not None:
+                    if tool_ok:
+                        self._role_runtime_controller.complete_task_node(
+                            tool_branch_node_id,
+                            run_state=run_state,
+                            summary=f"{name} completed",
+                            meta={
+                                "branch_group": worker_tool_branch_group,
+                                "call_id": call_id,
+                                "tool_name": name,
+                                "retry_count": max(0, branch_attempt - 1),
+                                "retried": retry_scheduled,
+                            },
+                        )
+                    else:
+                        branch_failures += 1
+                        self._role_runtime_controller.fail_task_node(
+                            tool_branch_node_id,
+                            run_state=run_state,
+                            error=str(result.get("error") or result.get("detail") or f"{name} failed"),
+                            meta={
+                                "branch_group": worker_tool_branch_group,
+                                "call_id": call_id,
+                                "tool_name": name,
+                                "retry_count": max(0, branch_attempt - 1),
+                                "retried": retry_scheduled,
+                            },
+                        )
                 if (
                     str(route.get("task_type") or "") == "code_lookup"
                     and name == "search_codebase"
@@ -2824,6 +3062,26 @@ class OfficeAgent:
                         synthetic_args = synthetic_call.get("args") if isinstance(synthetic_call.get("args"), dict) else {}
                         if not synthetic_name or not synthetic_args:
                             continue
+                        synthetic_node_id = ""
+                        if run_state is not None and latest_worker_node_id:
+                            synthetic_node_id = self._role_runtime_controller.begin_task_node(
+                                run_state=run_state,
+                                role="worker",
+                                parent_node_id=latest_worker_node_id,
+                                phase=f"tool_call:{synthetic_name}",
+                                role_kind="processor",
+                                node_type="branch",
+                                meta={
+                                    "branch_group": worker_tool_branch_group,
+                                    "call_id": f"{call_id}_auto_{idx}",
+                                    "tool_name": synthetic_name,
+                                    "tool_args": dict(synthetic_args),
+                                    "batch_index": call_index,
+                                    "synthetic": True,
+                                },
+                            )
+                            executed_tool_branch_ids.append(synthetic_node_id)
+                        branch_count += 1
                         synthetic_result = self.tools.execute(synthetic_name, synthetic_args)
                         append_tool_result_message(
                             name=synthetic_name,
@@ -2832,6 +3090,71 @@ class OfficeAgent:
                             call_id=f"{call_id}_auto_{idx}",
                             synthetic=True,
                         )
+                        synthetic_ok = bool(synthetic_result.get("ok", True))
+                        if synthetic_node_id and run_state is not None:
+                            if synthetic_ok:
+                                self._role_runtime_controller.complete_task_node(
+                                    synthetic_node_id,
+                                    run_state=run_state,
+                                    summary=f"{synthetic_name} completed",
+                                    meta={
+                                        "branch_group": worker_tool_branch_group,
+                                        "call_id": f"{call_id}_auto_{idx}",
+                                        "tool_name": synthetic_name,
+                                        "synthetic": True,
+                                    },
+                                )
+                            else:
+                                branch_failures += 1
+                                self._role_runtime_controller.fail_task_node(
+                                    synthetic_node_id,
+                                    run_state=run_state,
+                                    error=str(synthetic_result.get("error") or synthetic_result.get("detail") or f"{synthetic_name} failed"),
+                                    meta={
+                                        "branch_group": worker_tool_branch_group,
+                                        "call_id": f"{call_id}_auto_{idx}",
+                                        "tool_name": synthetic_name,
+                                        "synthetic": True,
+                                    },
+                                )
+
+            if run_state is not None and latest_worker_node_id and branch_count > 0:
+                join_node_id = self._role_runtime_controller.begin_task_node(
+                    run_state=run_state,
+                    role="worker",
+                    parent_node_id=latest_worker_node_id,
+                    phase="tool_join",
+                    role_kind="processor",
+                    node_type="join",
+                    meta={
+                        "branch_group": worker_tool_branch_group,
+                        "branch_count": branch_count,
+                        "failed_branches": branch_failures,
+                        "child_nodes": executed_tool_branch_ids,
+                    },
+                )
+                self._role_runtime_controller.complete_task_node(
+                    join_node_id,
+                    run_state=run_state,
+                    summary=f"joined {branch_count} tool branches",
+                    meta={
+                        "branch_group": worker_tool_branch_group,
+                        "branch_count": branch_count,
+                        "failed_branches": branch_failures,
+                    },
+                )
+                add_run_event(
+                    "worker_tool_join",
+                    node_id=join_node_id,
+                    worker_node_id=latest_worker_node_id,
+                    branch_group=worker_tool_branch_group,
+                    branch_count=branch_count,
+                    failed_branches=branch_failures,
+                )
+                if branch_count > 1 or branch_failures > 0:
+                    add_trace(
+                        f"Stage 4 试点: Worker 已汇合 {branch_count} 个工具分支，失败分支 {branch_failures} 个。"
+                    )
 
             try:
                 pruned = self._prune_old_tool_messages(messages)

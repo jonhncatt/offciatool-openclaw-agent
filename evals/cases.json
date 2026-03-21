@@ -2815,6 +2815,22 @@
     }
   },
   {
+    "name": "helper_debug_role_lab_worker_branch_graph_records_branch_and_join_nodes",
+    "kind": "helper",
+    "helper": "_debug_role_lab_worker_branch_graph",
+    "args": {},
+    "assert": {
+      "equals": {
+        "ok": true,
+        "join_node_count": 1,
+        "failed_branch_count": 1
+      },
+      "min_value": {
+        "branch_node_count": 2
+      }
+    }
+  },
+  {
     "name": "tool_doc_index_build_external_nvme_pdf",
     "kind": "tool",
     "tool": "doc_index_build",

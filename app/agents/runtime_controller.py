@@ -33,6 +33,15 @@ class RoleRuntimeController:
         seq = sum(1 for inst in run_state.instances.values() if inst.role == role) + 1
         return f"{role}#{seq}", seq
 
+    def _next_branch_node_id(self, run_state: RunState, role: str, phase: str) -> str:
+        phase_key = str(phase or "branch").strip().lower().replace(" ", "_")
+        seq = sum(
+            1
+            for node in run_state.nodes.values()
+            if node.role == role and node.node_type in {"branch", "join"} and node.phase == phase
+        ) + 1
+        return f"{role}:{phase_key}:{seq}"
+
     def execute(
         self,
         *,
@@ -195,6 +204,61 @@ class RoleRuntimeController:
             )
             self.capture_run_state(run_state)
 
+    def begin_task_node(
+        self,
+        *,
+        run_state: RunState,
+        role: str,
+        parent_node_id: str | None = None,
+        phase: str = "",
+        role_kind: str = "processor",
+        node_type: str = "branch",
+        meta: dict[str, Any] | None = None,
+        node_id: str | None = None,
+    ) -> str:
+        resolved_node_id = str(node_id or "").strip() or self._next_branch_node_id(run_state, role, phase)
+        parent_id = parent_node_id or run_state.root_node_id
+        with self._state_lock:
+            run_state.begin_node(
+                node_id=resolved_node_id,
+                role=role,
+                role_kind=str(role_kind or "processor"),  # type: ignore[arg-type]
+                node_type=str(node_type or "branch"),  # type: ignore[arg-type]
+                parent_node_id=parent_id,
+                phase=phase,
+                meta=meta,
+            )
+            self.capture_run_state(run_state)
+        return resolved_node_id
+
+    def complete_task_node(
+        self,
+        node_id: str,
+        *,
+        run_state: RunState,
+        summary: str = "",
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        if not str(node_id or "").strip():
+            return
+        with self._state_lock:
+            run_state.complete_node(node_id, summary=summary, meta=meta)
+            self.capture_run_state(run_state)
+
+    def fail_task_node(
+        self,
+        node_id: str,
+        *,
+        run_state: RunState,
+        error: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        if not str(node_id or "").strip():
+            return
+        with self._state_lock:
+            run_state.fail_node(node_id, error=error, meta=meta)
+            self.capture_run_state(run_state)
+
     def fail_managed(
         self,
         execution: RoleExecution,
@@ -279,14 +343,16 @@ class RoleRuntimeController:
                 {
                     "node_id": item.node_id,
                     "role": item.role,
+                    "node_type": item.node_type,
                     "parent_node_id": item.parent_node_id,
                     "phase": item.phase,
                     "status": item.status,
                     "attempts": item.attempts,
                     "summary": item.summary,
                     "error": item.error,
+                    "meta": dict(item.meta or {}),
                 }
-                for item in nodes[-18:]
+                for item in nodes[-32:]
             ],
             "instances": [
                 {
@@ -302,6 +368,7 @@ class RoleRuntimeController:
                 }
                 for item in instances[-18:]
             ],
+            "events": list(run_state.events[-48:]),
         }
         self._last_run_snapshot = snapshot
         return snapshot

@@ -1215,6 +1215,12 @@ textarea {
   gap: 10px;
 }
 
+.role-lab-runtime-layout {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 10px;
+}
+
 .kernel-stat {
   padding: 10px;
   border-radius: 12px;
@@ -1413,6 +1419,115 @@ textarea {
   color: #476475;
 }
 
+.runtime-graph,
+.runtime-failures {
+  display: grid;
+  gap: 8px;
+  min-height: 120px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(139, 177, 201, 0.3);
+  background: rgba(249, 252, 255, 0.95);
+}
+
+.runtime-graph-node {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  margin-left: calc(var(--depth, 0) * 18px);
+  border-radius: 10px;
+  border: 1px solid rgba(139, 177, 201, 0.22);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.runtime-graph-node.branch {
+  border-left: 4px solid #3c86ad;
+}
+
+.runtime-graph-node.join {
+  border-left: 4px solid #9c6f2f;
+  background: rgba(255, 249, 240, 0.95);
+}
+
+.runtime-graph-node.failed {
+  border-color: rgba(196, 120, 103, 0.45);
+  background: rgba(255, 244, 241, 0.96);
+}
+
+.runtime-graph-line,
+.runtime-failure-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-graph-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #7da2b7;
+  box-shadow: 0 0 0 3px rgba(125, 162, 183, 0.14);
+}
+
+.runtime-graph-dot.running {
+  background: #1a8c66;
+  box-shadow: 0 0 0 3px rgba(26, 140, 102, 0.14);
+}
+
+.runtime-graph-dot.completed {
+  background: #2477a0;
+  box-shadow: 0 0 0 3px rgba(36, 119, 160, 0.14);
+}
+
+.runtime-graph-dot.failed {
+  background: #b65643;
+  box-shadow: 0 0 0 3px rgba(182, 86, 67, 0.14);
+}
+
+.runtime-graph-label {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 700;
+  color: #17384c;
+}
+
+.runtime-graph-phase {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: #5a7383;
+}
+
+.runtime-graph-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: #56707f;
+}
+
+.runtime-graph-summary,
+.runtime-failure-detail {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #355364;
+}
+
+.runtime-graph-error {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #9f552d;
+}
+
+.runtime-failure-row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(196, 120, 103, 0.28);
+  background: rgba(255, 246, 243, 0.95);
+}
+
 @keyframes kernel-pulse {
   0%,
   100% {
@@ -1428,6 +1543,10 @@ textarea {
 @media (max-width: 940px) {
   .kernel-console-grid,
   .kernel-stat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .role-lab-runtime-layout {
     grid-template-columns: 1fr;
   }
 }
