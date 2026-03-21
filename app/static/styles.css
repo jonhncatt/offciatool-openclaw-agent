@@ -1052,82 +1052,82 @@ textarea {
 }
 
 .runtime-panel {
-  border-bottom: 1px solid rgba(82, 125, 158, 0.35);
+  border-bottom: 1px solid rgba(116, 149, 176, 0.26);
   padding: 12px;
   background:
-    radial-gradient(circle at top right, rgba(48, 116, 173, 0.18), transparent 28%),
-    linear-gradient(180deg, #09131d, #0d1926 56%, #111f2e);
-  color: #d8e7f2;
+    radial-gradient(circle at top right, rgba(70, 151, 208, 0.18), transparent 26%),
+    linear-gradient(180deg, #eef5fb, #e8f1f8 58%, #edf5fa);
+  color: #1b3141;
 }
 
 .runtime-head-text {
-  color: #9ec0d8;
+  color: #355366;
 }
 
 .stage-idle {
-  background: rgba(193, 210, 221, 0.1);
-  color: #bfd4e4;
-  border-color: rgba(167, 191, 210, 0.25);
+  background: #edf2f6;
+  color: #516474;
+  border-color: #c8d4de;
 }
 
 .stage-working {
-  background: rgba(48, 195, 255, 0.12);
-  color: #8fe0ff;
-  border-color: rgba(82, 211, 255, 0.36);
+  background: #e5f7ff;
+  color: #0d6b93;
+  border-color: #a8d9ed;
 }
 
 .stage-done {
-  background: rgba(39, 222, 158, 0.12);
-  color: #8ff2c8;
-  border-color: rgba(90, 234, 178, 0.34);
+  background: #e6f7ef;
+  color: #166d49;
+  border-color: #add7be;
 }
 
 .stage-error {
-  background: rgba(255, 128, 92, 0.14);
-  color: #ffbf9a;
-  border-color: rgba(255, 150, 111, 0.36);
+  background: #fff0ea;
+  color: #9d4c29;
+  border-color: #f0c0aa;
 }
 
 .runtime-step {
-  border-color: rgba(111, 142, 168, 0.22);
-  background: rgba(9, 19, 30, 0.55);
-  color: #8fa8bb;
+  border-color: #cfdae3;
+  background: rgba(255, 255, 255, 0.78);
+  color: #5b7081;
 }
 
 .runtime-step.is-active {
-  border-color: rgba(84, 205, 255, 0.48);
-  background: rgba(26, 60, 86, 0.6);
-  color: #ccf2ff;
+  border-color: #87c8e6;
+  background: #edf9ff;
+  color: #0f658a;
 }
 
 .runtime-step.is-done {
-  border-color: rgba(98, 228, 178, 0.34);
-  background: rgba(15, 54, 43, 0.56);
-  color: #a9eed0;
+  border-color: #a5d7bf;
+  background: #effaf4;
+  color: #255d43;
 }
 
 .runtime-step.is-error {
-  border-color: rgba(255, 145, 112, 0.42);
-  background: rgba(63, 28, 20, 0.62);
-  color: #ffd1bc;
+  border-color: #efc1b0;
+  background: #fff3ee;
+  color: #964924;
 }
 
 .kernel-console-shell {
   display: grid;
   gap: 12px;
   padding: 12px;
-  border: 1px solid rgba(88, 132, 168, 0.28);
+  border: 1px solid rgba(120, 154, 184, 0.24);
   border-radius: 16px;
   background:
-    linear-gradient(180deg, rgba(8, 18, 28, 0.9), rgba(10, 23, 35, 0.94)),
+    linear-gradient(180deg, rgba(252, 254, 255, 0.94), rgba(239, 247, 252, 0.96)),
     repeating-linear-gradient(
       90deg,
-      rgba(105, 155, 194, 0.08) 0,
-      rgba(105, 155, 194, 0.08) 1px,
+      rgba(104, 164, 200, 0.07) 0,
+      rgba(104, 164, 200, 0.07) 1px,
       transparent 1px,
       transparent 14px
     );
-  box-shadow: inset 0 0 0 1px rgba(89, 132, 165, 0.1), 0 16px 34px rgba(5, 10, 18, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(139, 181, 209, 0.14), 0 14px 28px rgba(86, 118, 141, 0.1);
 }
 
 .kernel-console-head,
@@ -1144,21 +1144,21 @@ textarea {
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #74caff;
+  color: #0e7ca7;
 }
 
 .kernel-console-title,
 .kernel-card-title {
   font-size: 18px;
   font-weight: 700;
-  color: #ecf7ff;
+  color: #143347;
 }
 
 .kernel-console-subtitle {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.45;
-  color: #8fb0c7;
+  color: #415f72;
   max-width: 760px;
 }
 
@@ -1168,8 +1168,8 @@ textarea {
   gap: 10px;
   padding: 10px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(84, 210, 255, 0.28);
-  background: rgba(15, 33, 46, 0.72);
+  border: 1px solid #a8cade;
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .kernel-live-dot {
@@ -1184,14 +1184,14 @@ textarea {
 .kernel-live-label {
   font-size: 13px;
   font-weight: 700;
-  color: #eff9ff;
+  color: #14374c;
 }
 
 .kernel-live-meta,
 .kernel-card-meta {
   margin-top: 2px;
   font-size: 11px;
-  color: #8caabd;
+  color: #4d6a7c;
 }
 
 .kernel-console-grid {
@@ -1205,8 +1205,8 @@ textarea {
   gap: 10px;
   padding: 12px;
   border-radius: 14px;
-  border: 1px solid rgba(92, 134, 165, 0.24);
-  background: linear-gradient(180deg, rgba(15, 28, 41, 0.88), rgba(9, 20, 31, 0.82));
+  border: 1px solid rgba(131, 171, 198, 0.3);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(243, 248, 252, 0.98));
 }
 
 .kernel-stat-grid {
@@ -1218,22 +1218,22 @@ textarea {
 .kernel-stat {
   padding: 10px;
   border-radius: 12px;
-  border: 1px solid rgba(86, 125, 154, 0.18);
-  background: rgba(8, 18, 28, 0.62);
+  border: 1px solid rgba(143, 180, 205, 0.32);
+  background: rgba(251, 253, 255, 0.98);
 }
 
 .kernel-stat-label {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #77c8ff;
+  color: #166d90;
 }
 
 .kernel-stat-value {
   margin-top: 6px;
   font-size: 15px;
   font-weight: 700;
-  color: #f1fbff;
+  color: #193445;
   word-break: break-word;
 }
 
@@ -1241,7 +1241,7 @@ textarea {
   margin-top: 4px;
   font-size: 11px;
   line-height: 1.4;
-  color: #89a8bc;
+  color: #516d7d;
 }
 
 .module-bay,
@@ -1258,9 +1258,9 @@ textarea {
   min-height: 132px;
   padding: 12px;
   border-radius: 14px;
-  border: 1px solid rgba(91, 130, 160, 0.24);
-  background: rgba(7, 16, 26, 0.84);
-  box-shadow: inset 0 0 0 1px rgba(74, 121, 161, 0.06);
+  border: 1px solid rgba(140, 178, 203, 0.32);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(103, 145, 175, 0.08);
 }
 
 .module-card-head,
@@ -1275,7 +1275,7 @@ textarea {
 .evolution-event-title {
   font-size: 14px;
   font-weight: 700;
-  color: #eff9ff;
+  color: #17374a;
 }
 
 .module-card-ref,
@@ -1283,7 +1283,7 @@ textarea {
 .evolution-event-meta {
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11px;
-  color: #89a8bc;
+  color: #536f80;
   word-break: break-all;
 }
 
@@ -1292,25 +1292,25 @@ textarea {
   align-items: center;
   padding: 4px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(90, 162, 214, 0.3);
-  color: #9ddaff;
-  background: rgba(26, 54, 74, 0.58);
+  border: 1px solid #7fb8d8;
+  color: #155f82;
+  background: #eef8ff;
   font-size: 11px;
   text-transform: uppercase;
 }
 
 .module-card.status-fallback .module-status-badge,
 .module-card.status-degraded .module-status-badge {
-  color: #ffcaac;
-  border-color: rgba(255, 151, 112, 0.36);
-  background: rgba(75, 37, 24, 0.62);
+  color: #9d552e;
+  border-color: #efc4b1;
+  background: #fff3ed;
 }
 
 .module-card-desc,
 .evolution-event-summary {
   font-size: 12px;
   line-height: 1.45;
-  color: #aac3d4;
+  color: #355364;
 }
 
 .module-card-stats {
@@ -1318,7 +1318,7 @@ textarea {
   flex-wrap: wrap;
   gap: 6px 10px;
   font-size: 11px;
-  color: #8ea8ba;
+  color: #4f6b7b;
 }
 
 .module-card-signals {
@@ -1332,77 +1332,77 @@ textarea {
   align-items: center;
   padding: 3px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(83, 205, 255, 0.22);
-  background: rgba(19, 48, 66, 0.64);
-  color: #c6ecff;
+  border: 1px solid #9fcbdf;
+  background: #eff8fc;
+  color: #155a79;
   font-size: 11px;
 }
 
 .module-card-error {
   font-size: 11px;
   line-height: 1.45;
-  color: #ffbb9c;
+  color: #9f552d;
   white-space: pre-wrap;
 }
 
 .role-board-shell {
-  border: 1px solid rgba(82, 128, 164, 0.24);
+  border: 1px solid rgba(127, 167, 194, 0.26);
   background:
-    linear-gradient(180deg, rgba(13, 27, 40, 0.92), rgba(11, 21, 32, 0.94)),
+    linear-gradient(180deg, rgba(249, 252, 255, 0.94), rgba(236, 245, 251, 0.96)),
     repeating-linear-gradient(
       0deg,
-      rgba(95, 146, 181, 0.05) 0,
-      rgba(95, 146, 181, 0.05) 1px,
+      rgba(96, 148, 182, 0.05) 0,
+      rgba(96, 148, 182, 0.05) 1px,
       transparent 1px,
       transparent 10px
     );
 }
 
 .role-board-title {
-  color: #eff9ff;
+  color: #16384c;
 }
 
 .role-board-legend {
-  color: #84a8c0;
+  color: #4d697b;
 }
 
 .role-card {
-  border-color: rgba(90, 126, 153, 0.24);
+  border-color: rgba(141, 177, 200, 0.24);
   background:
-    linear-gradient(180deg, rgba(17, 31, 45, 0.96), rgba(11, 23, 35, 0.95)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 250, 253, 0.97)),
     repeating-linear-gradient(
       90deg,
-      rgba(91, 138, 171, 0.05) 0,
-      rgba(91, 138, 171, 0.05) 1px,
+      rgba(91, 138, 171, 0.04) 0,
+      rgba(91, 138, 171, 0.04) 1px,
       transparent 1px,
       transparent 11px
     );
-  box-shadow: 0 10px 24px rgba(2, 8, 15, 0.24);
+  box-shadow: 0 8px 20px rgba(112, 144, 166, 0.1);
 }
 
 .role-name {
-  color: #eff9ff;
+  color: #17384c;
 }
 
 .role-summary,
 .role-phase,
 .role-bullets {
-  color: #9eb7ca;
+  color: #456273;
 }
 
 .role-sprite-wrap {
-  border-color: rgba(90, 126, 153, 0.22);
-  background: linear-gradient(180deg, rgba(25, 43, 58, 0.9), rgba(17, 29, 40, 0.92));
+  border-color: rgba(137, 177, 202, 0.22);
+  background: linear-gradient(180deg, rgba(245, 251, 255, 0.96), rgba(231, 243, 249, 0.94));
 }
 
 .runtime-details {
-  border: 1px solid rgba(86, 126, 156, 0.2);
-  background: rgba(8, 18, 28, 0.74);
+  border: 1px solid rgba(139, 177, 201, 0.32);
+  background: rgba(248, 252, 255, 0.97);
 }
 
 .runtime-details summary,
 .runtime-pre {
-  color: #99b7ca;
+  color: #476475;
 }
 
 @keyframes kernel-pulse {
