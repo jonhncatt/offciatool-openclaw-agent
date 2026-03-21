@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from app.models import ToolEvent
@@ -195,6 +196,66 @@ def summarize_write_tool_events(agent: Any, tool_events: list[ToolEvent], limit:
             parts.append(f"error={agent._shorten(error, 120)}")
         lines.append(" | ".join(parts))
     return lines[-max(1, limit) :]
+
+
+def successful_write_targets(agent: Any, tool_events: list[ToolEvent]) -> list[str]:
+    targets: list[str] = []
+    for event in tool_events:
+        name = str(event.name or "").strip()
+        if name not in {"write_text_file", "append_text_file", "replace_in_file", "copy_file"}:
+            continue
+        if agent._tool_event_ok(event) is not True:
+            continue
+        parsed = agent._parse_tool_event_preview(event) or {}
+        path = str(parsed.get("path") or "").strip()
+        if not path:
+            path = str((event.input or {}).get("path") or "").strip()
+        if name == "copy_file" and not path:
+            path = str(parsed.get("dst_path") or (event.input or {}).get("dst_path") or "").strip()
+        if path:
+            targets.append(path)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in targets:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def text_acknowledges_written_targets(text: str, targets: list[str]) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    tokens: list[str] = []
+    for path in targets:
+        normalized = str(path or "").strip()
+        if not normalized:
+            continue
+        tokens.append(normalized.lower())
+        basename = Path(normalized).name.strip().lower()
+        if basename:
+            tokens.append(basename)
+    if any(token and token in lowered for token in tokens):
+        return True
+    ack_markers = (
+        "已创建",
+        "已生成",
+        "已写入",
+        "已保存",
+        "创建了",
+        "生成了",
+        "写入了",
+        "保存到",
+        "created",
+        "generated",
+        "written",
+        "saved",
+    )
+    artifact_markers = ("文件", "文档", "markdown", ".md", ".txt", ".docx", "file", "document")
+    return any(marker in lowered for marker in ack_markers) and any(marker in lowered for marker in artifact_markers)
 
 
 def prepare_tool_result_for_llm(
