@@ -4,8 +4,6 @@ from dataclasses import asdict, dataclass, field as dc_field, fields as dataclas
 import json
 import os
 import re
-import shutil
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -52,10 +50,6 @@ from app.agents.review_support import (
 )
 from app.agents.reviewer_role import run_reviewer_role as run_reviewer_role_helper
 from app.agents.revision_role import run_revision_role as run_revision_role_helper
-from app.agents.role_contracts import (
-    validate_role_result as validate_role_result_helper,
-    validate_runtime_profile as validate_runtime_profile_helper,
-)
 from app.agents.role_catalog import ROLE_KINDS as _ROLE_KINDS, SPECIALIST_LABELS as _SPECIALIST_LABELS
 from app.agents.role_helpers import (
     make_default_role_result as make_default_role_result_helper,
@@ -64,12 +58,13 @@ from app.agents.role_helpers import (
     make_role_spec as make_role_spec_helper,
     role_payload_dict as role_payload_dict_helper,
 )
-from app.agents.role_smoke import run_role_execution_smoke as run_role_execution_smoke_helper
+from app.agents.role_debug_support import (
+    debug_role_contract_matrix as debug_role_contract_matrix_helper,
+    debug_role_execution_smoke_matrix as debug_role_execution_smoke_matrix_helper,
+)
 from app.agents.runtime_profiles import (
-    PATCH_WORKER_PROFILE,
     build_runtime_profile_hint,
     default_runtime_profile_for_route,
-    runtime_profile_spec,
 )
 from app.agents.structurer_role import run_structurer_role as run_structurer_role_helper
 from app.agents.specialist_role import (
@@ -84,8 +79,24 @@ from app.attachments import extract_document_text, image_to_data_url_with_meta, 
 from app.config import AppConfig
 from app.codex_runner import CodexResponsesRunner, build_codex_input_payload
 from app.core.bootstrap import KernelRuntime, build_kernel_runtime
-from app.core.module_code import read_python_module_version, sync_python_module_version
-from app.core.module_manifest import read_module_manifest, write_module_manifest
+from app.core.kernel_debug_support import (
+    debug_kernel_active_contracts as debug_kernel_active_contracts_helper,
+    debug_kernel_shadow_auto_repair_broken_manifest as debug_kernel_shadow_auto_repair_broken_manifest_helper,
+    debug_kernel_shadow_contracts as debug_kernel_shadow_contracts_helper,
+    debug_kernel_shadow_package_path_router as debug_kernel_shadow_package_path_router_helper,
+    debug_kernel_shadow_package_syncs_module_version as debug_kernel_shadow_package_syncs_module_version_helper,
+    debug_kernel_shadow_patch_worker_persists_missing_tasks as debug_kernel_shadow_patch_worker_persists_missing_tasks_helper,
+    debug_kernel_shadow_pipeline as debug_kernel_shadow_pipeline_helper,
+    debug_kernel_shadow_pipeline_classifies_broken_manifest as debug_kernel_shadow_pipeline_classifies_broken_manifest_helper,
+    debug_kernel_shadow_promote_rejects_dependency_mismatch as debug_kernel_shadow_promote_rejects_dependency_mismatch_helper,
+    debug_kernel_shadow_promote_rejects_module_version_mismatch as debug_kernel_shadow_promote_rejects_module_version_mismatch_helper,
+    debug_kernel_shadow_promote_rejects_path_refs as debug_kernel_shadow_promote_rejects_path_refs_helper,
+    debug_kernel_shadow_replay as debug_kernel_shadow_replay_helper,
+    debug_kernel_shadow_self_upgrade_flow as debug_kernel_shadow_self_upgrade_flow_helper,
+    debug_kernel_shadow_stage_and_smoke as debug_kernel_shadow_stage_and_smoke_helper,
+    debug_kernel_shadow_upgrade_flow as debug_kernel_shadow_upgrade_flow_helper,
+    debug_kernel_shadow_validation_rejects_broken_manifest as debug_kernel_shadow_validation_rejects_broken_manifest_helper,
+)
 from app.execution_policy import execution_policy_spec, planner_enabled_for_policy
 from app.local_tools import LocalToolExecutor
 from app.models import AgentPanel, ChatSettings, ToolEvent
@@ -94,6 +105,14 @@ from app.pipeline_hooks import (
     PIPELINE_HOOK_HANDLERS,
     build_pipeline_hook_panel_payload,
     build_pipeline_hook_telemetry,
+)
+from app.request_analysis_support import (
+    has_file_like_lookup_token as has_file_like_lookup_token_helper,
+    looks_like_code_generation_request as looks_like_code_generation_request_helper,
+    looks_like_local_code_lookup_request as looks_like_local_code_lookup_request_helper,
+    looks_like_permission_gate_text as looks_like_permission_gate_text_helper,
+    message_has_explicit_local_path as message_has_explicit_local_path_helper,
+    should_auto_search_default_roots as should_auto_search_default_roots_helper,
 )
 from app.router_rules import (
     HOLISTIC_DIRECT_PHRASES,
@@ -106,6 +125,28 @@ from app.router_rules import (
     TABLE_REFORMAT_HINTS,
     VERIFICATION_HINTS,
     text_has_any,
+)
+from app.router_intent_support import (
+    attachment_is_inline_parseable as attachment_is_inline_parseable_helper,
+    attachment_needs_tooling as attachment_needs_tooling_helper,
+    attachment_needs_tooling_for_turn as attachment_needs_tooling_for_turn_helper,
+    evidence_mode_needs_more_support as evidence_mode_needs_more_support_helper,
+    has_image_attachments as has_image_attachments_helper,
+    looks_like_holistic_document_explanation_request as looks_like_holistic_document_explanation_request_helper,
+    looks_like_image_capability_denial as looks_like_image_capability_denial_helper,
+    looks_like_image_text_extraction_request as looks_like_image_text_extraction_request_helper,
+    looks_like_initial_content_triage_request as looks_like_initial_content_triage_request_helper,
+    looks_like_inline_code_payload as looks_like_inline_code_payload_helper,
+    looks_like_inline_document_payload as looks_like_inline_document_payload_helper,
+    looks_like_internal_ticket_reference as looks_like_internal_ticket_reference_helper,
+    looks_like_meeting_minutes_request as looks_like_meeting_minutes_request_helper,
+    looks_like_source_trace_request as looks_like_source_trace_request_helper,
+    looks_like_spec_lookup_request as looks_like_spec_lookup_request_helper,
+    looks_like_stub_image_transcription as looks_like_stub_image_transcription_helper,
+    looks_like_table_reformat_request as looks_like_table_reformat_request_helper,
+    looks_like_understanding_request as looks_like_understanding_request_helper,
+    request_likely_requires_tools as request_likely_requires_tools_helper,
+    requires_evidence_mode as requires_evidence_mode_helper,
 )
 from app.role_runtime import (
     HookDebugEntry,
@@ -662,582 +703,70 @@ class OfficeAgent:
         return {"selected_ref": selected_ref, "tool_count": len(self._lc_tools)}
 
     def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            shadow = runtime.load_shadow_manifest()
-            shadow.router = str(target_router_ref or shadow.router)
-            runtime.write_shadow_manifest(shadow)
-            validation = runtime.validate_shadow_manifest()
-            promotion = runtime.promote_shadow_manifest()
-            active_after = runtime.supervisor.load_active_manifest().to_dict()
-            rollback = runtime.rollback_active_manifest()
-            active_restored = runtime.supervisor.load_active_manifest().to_dict()
-            return {
-                "validation": validation,
-                "promotion": promotion,
-                "rollback": rollback,
-                "active_after": active_after,
-                "active_restored": active_restored,
-            }
+        return debug_kernel_shadow_upgrade_flow_helper(self, target_router_ref)
 
     def _debug_kernel_shadow_validation_rejects_broken_manifest(
         self,
         broken_router_ref: str = "router_rules@999.0.0",
     ) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-bad-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            initial_active = runtime.supervisor.load_active_manifest().to_dict()
-            shadow = runtime.load_shadow_manifest()
-            shadow.router = str(broken_router_ref or shadow.router)
-            runtime.write_shadow_manifest(shadow)
-            validation = runtime.validate_shadow_manifest()
-            promotion = runtime.promote_shadow_manifest()
-            active_after_attempt = runtime.supervisor.load_active_manifest().to_dict()
-            return {
-                "initial_active": initial_active,
-                "validation": validation,
-                "promotion": promotion,
-                "active_after_attempt": active_after_attempt,
-            }
+        return debug_kernel_shadow_validation_rejects_broken_manifest_helper(self, broken_router_ref)
 
     def _debug_kernel_shadow_stage_and_smoke(
         self,
         target_router_ref: str = "router_rules@2.0.0",
     ) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-smoke-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            stage = runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
-            smoke = runtime.run_shadow_smoke(
-                user_message="给我今天的新闻",
-                validate_provider=False,
-            )
-            return {
-                "stage": stage,
-                "smoke": smoke,
-            }
+        return debug_kernel_shadow_stage_and_smoke_helper(self, target_router_ref)
 
     def _debug_kernel_shadow_replay(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-replay-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            runtime.stage_shadow_manifest(overrides={"router": str(target_router_ref)})
-            replay_record = {
-                "run_id": "synthetic-replay",
-                "session_id": "synthetic-session",
-                "message": "把数据整理成表格",
-                "settings": {"enable_tools": True, "response_style": "short"},
-                "summary_before": "",
-                "history_turns_before": [],
-                "attachment_metas": [],
-                "route_state_input": {},
-            }
-            replay = runtime.run_shadow_replay(replay_record=replay_record)
-            return {"replay": replay}
+        return debug_kernel_shadow_replay_helper(self, target_router_ref)
 
     def _debug_kernel_shadow_contracts(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-contracts-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            contracts = runtime.run_shadow_contracts()
-            return {"contracts": contracts}
+        return debug_kernel_shadow_contracts_helper(self)
 
     def _debug_kernel_active_contracts(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-active-contracts-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            contracts = runtime.run_active_contracts()
-            return {"contracts": contracts}
+        return debug_kernel_active_contracts_helper(self)
 
     def _debug_kernel_shadow_pipeline(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            pipeline = runtime.run_shadow_pipeline(
-                overrides={"router": str(target_router_ref)},
-                smoke_message="给我今天的新闻",
-                validate_provider=False,
-                replay_record={
-                    "run_id": "synthetic-pipeline",
-                    "session_id": "synthetic-session",
-                    "message": "给我今天的新闻",
-                    "settings": {"enable_tools": True, "response_style": "short"},
-                    "summary_before": "",
-                    "history_turns_before": [],
-                    "attachment_metas": [],
-                    "route_state_input": {},
-                },
-                promote_if_healthy=True,
-            )
-            rollback = runtime.rollback_active_manifest()
-            last_upgrade_run = runtime.read_last_upgrade_run()
-            upgrade_runs = runtime.list_upgrade_runs(limit=5)
-            return {
-                "pipeline": pipeline,
-                "stage": dict(pipeline.get("stage") or {}),
-                "validation": dict(pipeline.get("validation") or {}),
-                "smoke": dict(pipeline.get("smoke") or {}),
-                "replay": dict(pipeline.get("replay") or {}),
-                "promotion": dict(pipeline.get("promotion") or {}),
-                "rollback": rollback,
-                "last_upgrade_run": last_upgrade_run,
-                "upgrade_runs": upgrade_runs,
-            }
+        return debug_kernel_shadow_pipeline_helper(self, target_router_ref)
 
     def _debug_kernel_shadow_pipeline_classifies_broken_manifest(
         self,
         broken_router_ref: str = "router_rules@999.0.0",
     ) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-bad-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            pipeline = runtime.run_shadow_pipeline(
-                overrides={"router": str(broken_router_ref)},
-                smoke_message="给我今天的新闻",
-                validate_provider=False,
-                replay_record=None,
-                promote_if_healthy=False,
-            )
-            return {
-                "pipeline": pipeline,
-                "last_upgrade_run": runtime.read_last_upgrade_run(),
-                "upgrade_runs": runtime.list_upgrade_runs(limit=5),
-            }
+        return debug_kernel_shadow_pipeline_classifies_broken_manifest_helper(self, broken_router_ref)
 
     def _debug_kernel_shadow_auto_repair_broken_manifest(
         self,
         broken_router_ref: str = "router_rules@999.0.0",
     ) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-repair-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            broken_pipeline = runtime.run_shadow_pipeline(
-                overrides={"router": str(broken_router_ref)},
-                smoke_message="给我今天的新闻",
-                validate_provider=False,
-                replay_record=None,
-                promote_if_healthy=False,
-            )
-            repair = runtime.run_shadow_auto_repair(
-                base_upgrade_run=broken_pipeline,
-                replay_record=None,
-                smoke_message="给我今天的新闻",
-                validate_provider=False,
-                promote_if_healthy=False,
-                max_attempts=2,
-            )
-            return {
-                "broken_pipeline": broken_pipeline,
-                "repair": repair,
-                "last_repair_run": runtime.read_last_repair_run(),
-                "repair_runs": runtime.list_repair_runs(limit=5),
-                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
-            }
+        return debug_kernel_shadow_auto_repair_broken_manifest_helper(self, broken_router_ref)
 
     def _debug_kernel_shadow_promote_rejects_path_refs(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-promote-path-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            source_dir = cfg.modules_dir / "router_rules" / "v1"
-            path_module_dir = runtime_dir / "shadow_router_path"
-            shutil.copytree(source_dir, path_module_dir)
-            stage = runtime.stage_shadow_manifest(overrides={"router": f"path:{path_module_dir}"})
-            promote_check = runtime.shadow_promote_check()
-            promotion = runtime.promote_shadow_manifest()
-            return {
-                "stage": stage,
-                "promote_check": promote_check,
-                "promotion": promotion,
-                "shadow_manifest": runtime.load_shadow_manifest().to_dict(),
-                "active_manifest": runtime.supervisor.load_active_manifest().to_dict(),
-            }
+        return debug_kernel_shadow_promote_rejects_path_refs_helper(self)
 
     def _debug_kernel_shadow_patch_worker_persists_missing_tasks(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-patch-empty-") as tmp_dir:
-            runtime_dir = Path(tmp_dir).resolve()
-            cfg = replace(
-                self.config,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            patch_worker = runtime.run_shadow_patch_worker(
-                repair_run={"run_id": "synthetic-repair", "repair_tasks": []},
-                replay_record=None,
-                max_tasks=1,
-                max_rounds=3,
-                promote_if_healthy=False,
-            )
-            return {
-                "patch_worker": patch_worker,
-                "last_patch_worker_run": runtime.read_last_patch_worker_run(),
-                "patch_worker_runs": runtime.list_patch_worker_runs(limit=5),
-            }
+        return debug_kernel_shadow_patch_worker_persists_missing_tasks_helper(self)
 
     def _debug_kernel_shadow_package_path_router(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-package-") as tmp_dir:
-            root = Path(tmp_dir).resolve()
-            runtime_dir = root / "runtime"
-            modules_dir = root / "modules"
-            shutil.copytree(self.config.modules_dir, modules_dir)
-            cfg = replace(
-                self.config,
-                modules_dir=modules_dir,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            source_router_dir = modules_dir / "router_rules" / "v1"
-            stage = runtime.stage_shadow_manifest(overrides={"router": f"path:{source_router_dir}"})
-            package_run = runtime.package_shadow_modules(
-                labels=["router"],
-                package_note="debug package path router",
-                source_run_id="synthetic-upgrade",
-                patch_worker_run_id="synthetic-patch",
-                runtime_profile="patch_worker",
-            )
-            return {
-                "stage": stage,
-                "package_run": package_run,
-                "last_package_run": runtime.read_last_package_run(),
-                "package_runs": runtime.list_package_runs(limit=5),
-                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
-            }
+        return debug_kernel_shadow_package_path_router_helper(self)
 
     def _debug_role_contract_matrix(self) -> dict[str, Any]:
-        route = {
-            "task_type": "attachment_tooling",
-            "primary_intent": "understanding",
-            "execution_policy": "attachment_tooling",
-            "runtime_profile": default_runtime_profile_for_route(
-                {
-                    "task_type": "attachment_tooling",
-                    "primary_intent": "understanding",
-                    "execution_policy": "attachment_tooling",
-                }
-            ),
-        }
-        role_payloads = {
-            "planner": {
-                "objective": "整理文档重点",
-                "constraints": ["不要输出思维链"],
-                "plan": ["先看附件摘要", "再给解释"],
-                "watchouts": ["不要误判成取证链"],
-                "success_signals": ["回答清楚整体思路"],
-            },
-            "reviewer": {
-                "verdict": "pass",
-                "confidence": "medium",
-                "summary": "结构完整。",
-                "strengths": ["覆盖了主要问题"],
-                "risks": [],
-                "followups": [],
-            },
-            "revision": {
-                "changed": True,
-                "summary": "已按 reviewer 调整措辞。",
-                "key_changes": ["补充了限制说明"],
-                "final_answer": "这是修订后的答复。",
-            },
-            "conflict_detector": {
-                "has_conflict": False,
-                "confidence": "medium",
-                "summary": "未发现明显冲突。",
-                "concerns": [],
-                "suggested_checks": [],
-            },
-        }
-        specialist_payloads = {
-            role: self._specialist_fallback(
-                specialist=role,
-                requested_model=self.config.default_model,
-                attachment_metas=[],
-                initial_triage_request=False,
-            )
-            for role in ("researcher", "file_reader", "summarizer", "fixer")
-        }
-        roles: list[dict[str, Any]] = []
-        for role, payload in {**role_payloads, **specialist_payloads}.items():
-            output_keys_map = {
-                "planner": ["objective", "constraints", "plan", "watchouts", "success_signals"],
-                "reviewer": ["verdict", "confidence", "summary", "strengths", "risks", "followups"],
-                "revision": ["changed", "summary", "key_changes", "final_answer"],
-                "conflict_detector": ["has_conflict", "confidence", "summary", "concerns", "suggested_checks"],
-                "researcher": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
-                "file_reader": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
-                "summarizer": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
-                "fixer": ["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
-            }
-            result = self._make_default_role_result(
-                role,
-                payload=payload,
-                requested_model=self.config.default_model,
-                user_message="解释一下文档整体思路",
-                history_summary="上一轮已经读了附件摘要。",
-                route=route,
-                description=f"{role} contract test",
-                output_keys=output_keys_map.get(role, []),
-            )
-            validation = validate_role_result_helper(result)
-            roles.append(validation)
-        profiles = [
-            validate_runtime_profile_helper(runtime_profile_spec("explainer")),
-            validate_runtime_profile_helper(runtime_profile_spec("evidence")),
-            validate_runtime_profile_helper(PATCH_WORKER_PROFILE),
-        ]
-        return {
-            "ok": all(bool(item.get("ok")) for item in roles) and all(bool(item.get("ok")) for item in profiles),
-            "roles": roles,
-            "profiles": profiles,
-        }
+        return debug_role_contract_matrix_helper(self)
 
     def _debug_role_execution_smoke_matrix(self) -> dict[str, Any]:
-        return run_role_execution_smoke_helper(self)
+        return debug_role_execution_smoke_matrix_helper(self)
 
     def _debug_kernel_shadow_package_syncs_module_version(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-package-version-") as tmp_dir:
-            root = Path(tmp_dir).resolve()
-            runtime_dir = root / "runtime"
-            modules_dir = root / "modules"
-            shutil.copytree(self.config.modules_dir, modules_dir)
-            cfg = replace(
-                self.config,
-                modules_dir=modules_dir,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            source_router_dir = modules_dir / "router_rules" / "v1"
-            runtime.stage_shadow_manifest(overrides={"router": f"path:{source_router_dir}"})
-            package_run = runtime.package_shadow_modules(labels=["router"], runtime_profile="patch_worker")
-            packaged = ((package_run.get("packaged_modules") or [{}])[0] or {})
-            packaged_ref = str(packaged.get("packaged_ref") or "")
-            module_id, version = packaged_ref.split("@", 1)
-            packaged_dir = modules_dir / module_id / f"v{version.split('.', 1)[0]}"
-            packaged_manifest = read_module_manifest(packaged_dir / "manifest.toml")
-            code_version = read_python_module_version(packaged_dir)
-            return {
-                "package_run": package_run,
-                "packaged_ref": packaged_ref,
-                "manifest_version": packaged_manifest.version,
-                "code_version": code_version,
-                "versions_match": packaged_manifest.version == code_version,
-                "code_version_sync": packaged.get("code_version_sync") or {},
-            }
+        return debug_kernel_shadow_package_syncs_module_version_helper(self)
 
     def _debug_kernel_shadow_promote_rejects_module_version_mismatch(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-version-mismatch-") as tmp_dir:
-            root = Path(tmp_dir).resolve()
-            runtime_dir = root / "runtime"
-            modules_dir = root / "modules"
-            shutil.copytree(self.config.modules_dir, modules_dir)
-            cfg = replace(
-                self.config,
-                modules_dir=modules_dir,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            source_router_dir = modules_dir / "router_rules" / "v1"
-            runtime.stage_shadow_manifest(overrides={"router": f"path:{source_router_dir}"})
-            package_run = runtime.package_shadow_modules(labels=["router"], runtime_profile="patch_worker")
-            packaged_ref = str(((package_run.get("packaged_modules") or [{}])[0] or {}).get("packaged_ref") or "")
-            module_id, version = packaged_ref.split("@", 1)
-            packaged_dir = modules_dir / module_id / f"v{version.split('.', 1)[0]}"
-            sync_python_module_version(packaged_dir, "0.0.1")
-            runtime.stage_shadow_manifest(overrides={"router": packaged_ref})
-            promote_check = runtime.shadow_promote_check()
-            promotion = runtime.promote_shadow_manifest()
-            return {
-                "package_run": package_run,
-                "promote_check": promote_check,
-                "promotion": promotion,
-                "code_version": read_python_module_version(packaged_dir),
-                "manifest_version": read_module_manifest(packaged_dir / "manifest.toml").version,
-            }
+        return debug_kernel_shadow_promote_rejects_module_version_mismatch_helper(self)
 
     def _debug_kernel_shadow_promote_rejects_dependency_mismatch(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-dependency-") as tmp_dir:
-            root = Path(tmp_dir).resolve()
-            runtime_dir = root / "runtime"
-            modules_dir = root / "modules"
-            shutil.copytree(self.config.modules_dir, modules_dir)
-            cfg = replace(
-                self.config,
-                modules_dir=modules_dir,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            source_router_dir = modules_dir / "router_rules" / "v1"
-            runtime.stage_shadow_manifest(overrides={"router": f"path:{source_router_dir}"})
-            package_run = runtime.package_shadow_modules(labels=["router"], runtime_profile="patch_worker")
-            packaged_ref = str(((package_run.get("packaged_modules") or [{}])[0] or {}).get("packaged_ref") or "")
-            packaged_manifest_path = modules_dir / "router_rules" / "v3" / "manifest.toml"
-            packaged_manifest = read_module_manifest(packaged_manifest_path)
-            broken_manifest = type(packaged_manifest)(
-                id=packaged_manifest.id,
-                version=packaged_manifest.version,
-                api_version=packaged_manifest.api_version,
-                kind=packaged_manifest.kind,
-                entrypoint=packaged_manifest.entrypoint,
-                capabilities=packaged_manifest.capabilities,
-                depends_on=("policy=policy_resolver@999.0.0",),
-                runtime_profile=packaged_manifest.runtime_profile,
-                source_ref=packaged_manifest.source_ref,
-                packaged_at=packaged_manifest.packaged_at,
-                path=packaged_manifest.path,
-            )
-            write_module_manifest(packaged_manifest_path, broken_manifest)
-            runtime.stage_shadow_manifest(overrides={"router": packaged_ref})
-            promote_check = runtime.shadow_promote_check()
-            promotion = runtime.promote_shadow_manifest()
-            return {
-                "package_run": package_run,
-                "promote_check": promote_check,
-                "promotion": promotion,
-                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
-            }
+        return debug_kernel_shadow_promote_rejects_dependency_mismatch_helper(self)
 
     def _debug_kernel_shadow_self_upgrade_flow(self) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="officetool-kernel-self-upgrade-") as tmp_dir:
-            root = Path(tmp_dir).resolve()
-            runtime_dir = root / "runtime"
-            modules_dir = root / "modules"
-            shutil.copytree(self.config.modules_dir, modules_dir)
-            cfg = replace(
-                self.config,
-                modules_dir=modules_dir,
-                runtime_dir=runtime_dir,
-                active_manifest_path=runtime_dir / "active_manifest.json",
-                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
-                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
-                module_health_path=runtime_dir / "module_health.json",
-            )
-            runtime = build_kernel_runtime(cfg)
-            source_router_dir = modules_dir / "router_rules" / "v1"
-            base_pipeline = runtime.run_shadow_pipeline(
-                overrides={"router": f"path:{source_router_dir}"},
-                smoke_message="给我今天的新闻",
-                validate_provider=False,
-                replay_record=None,
-                promote_if_healthy=True,
-            )
-            self_upgrade = runtime.run_shadow_self_upgrade(
-                base_upgrade_run=base_pipeline,
-                replay_record=None,
-                smoke_message="给我今天的新闻",
-                validate_provider=False,
-                max_attempts=1,
-                max_tasks=1,
-                max_rounds=2,
-                promote_if_healthy=True,
-            )
-            return {
-                "base_pipeline": base_pipeline,
-                "self_upgrade": self_upgrade,
-                "active_manifest_after": runtime.supervisor.load_active_manifest().to_dict(),
-                "shadow_manifest_after": runtime.load_shadow_manifest().to_dict(),
-                "last_package_run": runtime.read_last_package_run(),
-                "last_patch_worker_run": runtime.read_last_patch_worker_run(),
-            }
+        return debug_kernel_shadow_self_upgrade_flow_helper(self)
 
     def _module_registry(self):
         return self._kernel_runtime.registry
@@ -4521,344 +4050,29 @@ class OfficeAgent:
         return False
 
     def _message_has_explicit_local_path(self, text: str) -> bool:
-        raw = str(text or "").strip()
-        if not raw:
-            return False
-        return bool(re.search(r"(?:^|[\s(])(?:/[^\s]+|[A-Za-z][:\\：][\\/][^\s]*)", raw))
+        return message_has_explicit_local_path_helper(text)
 
     def _has_file_like_lookup_token(self, text: str) -> bool:
-        raw = str(text or "").strip().lower()
-        if not raw:
-            return False
-        tokens = re.findall(r"[a-z0-9][a-z0-9._-]{4,}", raw)
-        tld_like_suffixes = (".com", ".cn", ".net", ".org", ".jp", ".io", ".dev")
-        code_exts = {
-            "c",
-            "cc",
-            "cpp",
-            "cxx",
-            "h",
-            "hpp",
-            "hh",
-            "py",
-            "js",
-            "jsx",
-            "ts",
-            "tsx",
-            "java",
-            "go",
-            "rs",
-            "swift",
-            "kt",
-            "rb",
-            "php",
-            "sh",
-            "ps1",
-            "yaml",
-            "yml",
-            "json",
-            "xml",
-            "toml",
-            "ini",
-            "cfg",
-            "md",
-            "txt",
-        }
-        for token in tokens:
-            if token.startswith(("http://", "https://", "www.")):
-                continue
-            if token.endswith(tld_like_suffixes):
-                continue
-            if "_" in token and len(token) >= 6:
-                return True
-            if "." in token:
-                stem, _, suffix = token.rpartition(".")
-                if stem and suffix in code_exts:
-                    return True
-        return False
+        return has_file_like_lookup_token_helper(text)
 
     def _should_auto_search_default_roots(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        if attachment_metas:
-            return False
-        if self._looks_like_inline_document_payload(user_message):
-            return False
-        text = str(user_message or "").strip().lower()
-        if not text:
-            return False
-        if self._message_has_explicit_local_path(user_message):
-            return False
-        if "http://" in text or "https://" in text or any(hint in text for hint in _NEWS_HINTS):
-            return False
-
-        search_verbs = (
-            "找",
-            "查",
-            "搜",
-            "搜索",
-            "查找",
-            "定位",
-            "look for",
-            "find",
-            "search",
-            "locate",
+        return should_auto_search_default_roots_helper(
+            self,
+            user_message,
+            attachment_metas,
+            news_hints=_NEWS_HINTS,
         )
-        local_targets = (
-            "函数",
-            "方法",
-            "代码",
-            "源码",
-            "测试",
-            "用例",
-            "文件",
-            "目录",
-            "文件夹",
-            "项目",
-            "仓库",
-            "repo",
-            "master",
-            "source",
-            "src",
-            "test",
-            "tests",
-            "case",
-            "实现",
-            "定义",
-            "声明",
-            "调用点",
-            "module",
-            "function",
-            "method",
-            "file",
-            "directory",
-            "folder",
-            "implementation",
-        )
-        has_lookup_verb = any(verb in text for verb in search_verbs)
-        has_local_target = any(target in text for target in local_targets)
-        return has_lookup_verb and (has_local_target or self._has_file_like_lookup_token(text))
 
     def _looks_like_local_code_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        if attachment_metas:
-            return False
-        if self._looks_like_inline_document_payload(user_message):
-            return False
-        text = str(user_message or "").strip().lower()
-        if not text:
-            return False
-        if "http://" in text or "https://" in text or any(hint in text for hint in _NEWS_HINTS):
-            return False
-
-        local_scope_hints = (
-            "路径",
-            "目录",
-            "文件夹",
-            "目录下",
-            "文件夹下",
-            "路径下",
-            "项目",
-            "仓库",
-            "repo",
-            "workbench",
-            "workspace",
-            "master",
-            "source",
-            "src",
-            "test",
-            "tests",
-            "folder",
-            "directory",
-            "repo",
-            "project",
-        )
-        code_target_hints = (
-            "函数",
-            "方法",
-            "实现",
-            "定义",
-            "声明",
-            "调用点",
-            "测试",
-            "用例",
-            "测试文件",
-            "文件名",
-            "module",
-            "function",
-            "method",
-            "test",
-            "case",
-            "filename",
-            "file name",
-            "implementation",
-            "call site",
-            "definition",
-        )
-        lookup_hints = (
-            "找",
-            "查",
-            "搜",
-            "搜索",
-            "查找",
-            "定位",
-            "解释",
-            "分析",
-            "说明",
-            "梳理",
-            "看看",
-            "看下",
-            "看一下",
-            "look for",
-            "find",
-            "search",
-            "locate",
-            "explain",
-            "analyze",
-        )
-        has_local_scope = self._message_has_explicit_local_path(user_message) or any(hint in text for hint in local_scope_hints)
-        has_code_target = any(hint in text for hint in code_target_hints)
-        has_lookup_intent = any(hint in text for hint in lookup_hints)
-        has_file_like_token = self._has_file_like_lookup_token(text)
-        return (
-            has_lookup_intent
-            and (has_code_target or has_file_like_token)
-            and (has_local_scope or self._should_auto_search_default_roots(user_message, attachment_metas))
+        return looks_like_local_code_lookup_request_helper(
+            self,
+            user_message,
+            attachment_metas,
+            news_hints=_NEWS_HINTS,
         )
 
     def _looks_like_code_generation_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        text = str(user_message or "").strip().lower()
-        if not text:
-            return False
-
-        generation_hints = (
-            "生成",
-            "创建",
-            "新建",
-            "改",
-            "修",
-            "写",
-            "编写",
-            "实现",
-            "开发",
-            "补全",
-            "重构",
-            "改写",
-            "修改",
-            "修复",
-            "替换",
-            "更新",
-            "写入",
-            "保存",
-            "generate",
-            "create",
-            "write",
-            "implement",
-            "build",
-            "scaffold",
-            "refactor",
-            "rewrite",
-            "modify",
-            "fix",
-            "replace",
-            "update",
-            "edit",
-        )
-        code_target_hints = (
-            "代码",
-            "函数",
-            "类",
-            "组件",
-            "页面",
-            "接口",
-            "脚本",
-            "测试",
-            "单元测试",
-            "模块",
-            "变量",
-            "参数",
-            "字段",
-            "头文件",
-            "header",
-            ".h",
-            ".hpp",
-            "plugin",
-            "component",
-            "page",
-            "api",
-            "endpoint",
-            "script",
-            "test",
-            "class",
-            "function",
-            "module",
-            ".py",
-            ".ts",
-            ".tsx",
-            ".js",
-            ".jsx",
-            ".java",
-            ".go",
-            ".rs",
-            ".cpp",
-            ".c",
-        )
-        lookup_only_hints = (
-            "找",
-            "查",
-            "搜",
-            "搜索",
-            "查找",
-            "定位",
-            "explain",
-            "解释",
-            "look for",
-            "find",
-            "search",
-            "locate",
-        )
-
-        has_generation_intent = any(hint in text for hint in generation_hints)
-        if not has_generation_intent:
-            return False
-        has_code_target = any(hint in text for hint in code_target_hints)
-        if not has_code_target and not attachment_metas:
-            return False
-        if any(hint in text for hint in lookup_only_hints) and not any(
-            hint in text
-            for hint in (
-                "生成",
-                "创建",
-                "新建",
-                "改",
-                "修",
-                "写",
-                "编写",
-                "实现",
-                "开发",
-                "补全",
-                "重构",
-                "改写",
-                "修改",
-                "修复",
-                "替换",
-                "更新",
-                "写入",
-                "保存",
-                "generate",
-                "create",
-                "write",
-                "implement",
-                "build",
-                "scaffold",
-                "refactor",
-                "rewrite",
-                "modify",
-                "fix",
-                "replace",
-                "update",
-                "edit",
-            )
-        ):
-            return False
-        return True
+        return looks_like_code_generation_request_helper(user_message, attachment_metas)
 
     def _should_force_initial_tool_execution(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
         if attachment_metas:
@@ -6687,299 +5901,62 @@ class OfficeAgent:
         return "\n".join(lines)[:6000]
 
     def _looks_like_understanding_request(self, user_message: str) -> bool:
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        if any(hint in text for hint in _NEWS_HINTS):
-            return False
-        if self._looks_like_inline_document_payload(user_message):
-            return True
-        if self._requires_evidence_mode(user_message, []):
-            return False
-        tool_markers = (
-            "read_text_file",
-            "search_text_in_file",
-            "table_extract",
-            "fact_check_file",
-            "search_codebase",
-            "search_web",
-            "fetch_web",
-            "download_web_file",
+        return looks_like_understanding_request_helper(
+            self,
+            user_message,
+            understanding_hints=_UNDERSTANDING_HINTS,
+            news_hints=_NEWS_HINTS,
         )
-        if any(marker in text for marker in tool_markers):
-            return False
-        return any(hint in text for hint in _UNDERSTANDING_HINTS)
 
     def _looks_like_holistic_document_explanation_request(self, user_message: str) -> bool:
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        if self._looks_like_source_trace_request(user_message):
-            return False
-        if text_has_any(text, VERIFICATION_HINTS) or "页码" in text:
-            return False
-        has_overview = text_has_any(text, HOLISTIC_OVERVIEW_MARKERS)
-        has_explain = text_has_any(text, HOLISTIC_EXPLAIN_MARKERS)
-        if has_overview and has_explain:
-            return True
-        return text_has_any(text, HOLISTIC_DIRECT_PHRASES)
+        return looks_like_holistic_document_explanation_request_helper(self, user_message)
 
     def _looks_like_source_trace_request(self, user_message: str) -> bool:
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        if text_has_any(text, SOURCE_TRACE_HINTS):
-            return True
-        return bool(
-            re.search(r"(?:在哪|哪里|哪儿).{0,6}(?:看到|写到|提到)", text)
-            or re.search(r"(?:where).{0,18}(?:see|mention|found)", text)
-        )
+        return looks_like_source_trace_request_helper(user_message)
 
     def _has_image_attachments(self, attachment_metas: list[dict[str, Any]]) -> bool:
-        return any(str(meta.get("kind") or "").strip().lower() == "image" for meta in attachment_metas)
+        return has_image_attachments_helper(attachment_metas)
 
     def _looks_like_image_text_extraction_request(self, user_message: str) -> bool:
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        hints = (
-            "原文",
-            "可见文字",
-            "完整转录",
-            "转录",
-            "抄录",
-            "逐字",
-            "逐行",
-            "ocr",
-            "图片中可见",
-            "截图中可见",
-            "text in image",
-            "transcribe",
-            "verbatim",
-        )
-        if any(hint in text for hint in hints):
-            return True
-        return bool(re.search(r"(?:图片|截图|图里|图片里|截图里).{0,8}(?:写了什么|写的什么|写了啥|是什么)", text))
+        return looks_like_image_text_extraction_request_helper(user_message)
 
     def _looks_like_image_capability_denial(self, text: str) -> bool:
-        lowered = str(text or "").strip().lower()
-        if not lowered:
-            return False
-        patterns = (
-            "无法直接对图像执行ocr",
-            "无法对图像执行ocr",
-            "无法执行ocr",
-            "目前无法直接对图像",
-            "无法读取图片",
-            "不能读取图片",
-            "无法识别图片",
-            "无法查看图片",
-            "我目前无法直接",
-            "can't directly perform ocr",
-            "cannot directly perform ocr",
-            "cannot perform ocr",
-            "can't perform ocr",
-            "cannot read the image",
-            "can't read the image",
-            "cannot view images",
-            "can't view images",
-            "unable to process image",
-        )
-        return any(pattern in lowered for pattern in patterns)
+        return looks_like_image_capability_denial_helper(text)
 
     def _looks_like_stub_image_transcription(self, text: str) -> bool:
-        raw = str(text or "").strip()
-        if not raw:
-            return False
-        if len(raw) > 260:
-            return False
-        lowered = raw.lower()
-        intro_markers = (
-            "以下为图片中可见",
-            "以下是图片中可见",
-            "以下为截图中可见",
-            "以下是截图中可见",
-            "按画面顺序",
-            "完整转录",
-            "无推测",
-            "transcription",
-            "verbatim",
-        )
-        if not any(marker in lowered for marker in intro_markers):
-            return False
-        lines = [line.strip() for line in raw.splitlines() if line.strip()]
-        if len(lines) <= 1:
-            return True
-        body = " ".join(lines[1:]).strip()
-        if not body:
-            return True
-        if re.search(r"[：:]\s*$", lines[0]) and len(body) < 20:
-            return True
-        return len(body) < 12
+        return looks_like_stub_image_transcription_helper(text)
 
     def _looks_like_meeting_minutes_request(self, user_message: str) -> bool:
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        if self._requires_evidence_mode(user_message, []):
-            return False
-
-        direct_phrases = (
-            "会议纪要",
-            "会议记录",
-            "meeting minutes",
-            "meeting notes",
-            "minutes of meeting",
+        return looks_like_meeting_minutes_request_helper(
+            self,
+            user_message,
+            meeting_hints=_MEETING_HINTS,
+            meeting_minutes_action_hints=_MEETING_MINUTES_ACTION_HINTS,
         )
-        if any(phrase in text for phrase in direct_phrases):
-            return True
-
-        has_meeting_context = any(hint in text for hint in _MEETING_HINTS)
-        has_minutes_intent = any(hint in text for hint in _MEETING_MINUTES_ACTION_HINTS)
-        return has_meeting_context and has_minutes_intent
 
     def _looks_like_inline_document_payload(self, user_message: str) -> bool:
-        text = str(user_message or "").strip()
-        if len(text) < 120:
-            return False
-        lowered = text.lower()
-        if "<?xml" in lowered:
-            return True
-        if any(marker in lowered for marker in _INLINE_DOC_CODE_FENCE_HINTS):
-            return True
-        if self._looks_like_inline_code_payload(text):
-            return True
-
-        xml_tag_matches = re.findall(r"</?[a-zA-Z_][\w:.-]*(?:\s[^<>]{0,200})?>", text)
-        if len(xml_tag_matches) >= 6 and ("\n" in text or len(text) >= 240):
-            return True
-
-        json_key_count = len(re.findall(r'"[^"\n]{1,80}"\s*:', text))
-        if json_key_count >= 4 and len(text) >= 180:
-            return True
-
-        yaml_key_count = len(re.findall(r"(?m)^[A-Za-z0-9_.-]{1,60}:\s+\S", text))
-        if yaml_key_count >= 5 and len(text) >= 180:
-            return True
-
-        return False
+        return looks_like_inline_document_payload_helper(
+            self,
+            user_message,
+            _INLINE_DOC_CODE_FENCE_HINTS,
+        )
 
     def _looks_like_inline_code_payload(self, text: str) -> bool:
-        raw = str(text or "").strip()
-        if len(raw) < 120:
-            return False
-        fenced_blocks = re.findall(r"```[A-Za-z0-9_+.-]*\n([\s\S]{80,}?)```", raw)
-        code_markers = (
-            "def ",
-            "class ",
-            "return ",
-            "import ",
-            "from ",
-            "const ",
-            "let ",
-            "function ",
-            "public ",
-            "private ",
-            "if (",
-            "=>",
-            "</",
-            "{",
-            "};",
-        )
-        if any(any(marker in block for marker in code_markers) for block in fenced_blocks[:3]):
-            return True
-        lines = [line.rstrip() for line in raw.splitlines() if line.strip()]
-        if len(lines) < 6:
-            return False
-        marker_hits = sum(1 for line in lines[:40] if any(marker in line for marker in code_markers))
-        punctuation_hits = sum(1 for line in lines[:40] if line.count("{") + line.count("}") + line.count(";") >= 1)
-        return marker_hits >= 4 or (marker_hits >= 2 and punctuation_hits >= 4)
+        return looks_like_inline_code_payload_helper(text)
 
     def _looks_like_initial_content_triage_request(self, user_message: str) -> bool:
-        text = str(user_message or "").strip().lower()
-        if not text:
-            return False
-        if any(hint in text for hint in _INITIAL_CONTENT_TRIAGE_HINTS):
-            return True
-        if ("下面" in text or "以下" in text or "below" in text) and (
-            "理解" in text or "看懂" in text or "解释" in text or "understand" in text or "read" in text
-        ):
-            return True
-        return False
+        return looks_like_initial_content_triage_request_helper(user_message, _INITIAL_CONTENT_TRIAGE_HINTS)
 
     def _looks_like_internal_ticket_reference(self, user_message: str) -> bool:
-        text = str(user_message or "").strip().lower()
-        if not text:
-            return False
-        ticket_markers = (
-            "redmine",
-            "jira",
-            "ticket",
-            "issue",
-            "工单",
-            "票",
-            "任务单",
-            "缺陷",
-            "bug单",
-            "需求单",
-        )
-        internal_markers = (
-            "internal",
-            "intranet",
-            "corp",
-            "private",
-            "内部",
-            "内网",
-            "公司",
-            "企业",
-            "私有",
-        )
-        has_ticket = any(marker in text for marker in ticket_markers)
-        has_internal = any(marker in text for marker in internal_markers)
-        has_url = "http://" in text or "https://" in text
-        # Internal ticket messages often include both ticket semantics and private context hints.
-        return has_ticket and (has_internal or has_url)
+        return looks_like_internal_ticket_reference_helper(user_message)
 
     def _attachment_is_inline_parseable(self, meta: dict[str, Any]) -> bool:
-        suffix = str(meta.get("suffix") or "").strip().lower()
-        kind = str(meta.get("kind") or "").strip().lower()
-        try:
-            size = int(meta.get("size") or 0)
-        except Exception:
-            size = 0
-        if kind == "image":
-            return size <= _ATTACHMENT_INLINE_IMAGE_MAX_BYTES
-        if kind != "document":
-            return False
-        if self._attachment_needs_tooling(meta):
-            return False
-        parseable_suffixes = {
-            ".txt",
-            ".md",
-            ".csv",
-            ".json",
-            ".pdf",
-            ".docx",
-            ".pptx",
-            ".pptm",
-            ".xlsx",
-            ".xlsm",
-            ".xltx",
-            ".xltm",
-            ".xls",
-            ".html",
-            ".xml",
-            ".atom",
-            ".rss",
-            ".yaml",
-            ".yml",
-            ".log",
-            ".py",
-            ".js",
-            ".ts",
-            ".tsx",
-        }
-        return suffix in parseable_suffixes and size <= _ATTACHMENT_INLINE_MAX_BYTES
+        return attachment_is_inline_parseable_helper(
+            self,
+            meta,
+            attachment_inline_image_max_bytes=_ATTACHMENT_INLINE_IMAGE_MAX_BYTES,
+            attachment_inline_max_bytes=_ATTACHMENT_INLINE_MAX_BYTES,
+        )
 
     def _task_type_to_primary_intent(self, task_type: str) -> str:
         normalized = str(task_type or "").strip().lower()
@@ -9160,104 +8137,24 @@ class OfficeAgent:
         return f"{size:.2f} {units[idx]}"
 
     def _looks_like_spec_lookup_request(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        if not attachment_metas:
-            return False
-
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        if self._looks_like_holistic_document_explanation_request(user_message):
-            return False
-
-        if re.search(r"(?i)\b(?:0x[0-9a-f]{1,4}|[0-9a-f]{1,4}h)\b", text):
-            return True
-        return text_has_any(text, SPEC_LOOKUP_HINTS)
+        return looks_like_spec_lookup_request_helper(self, user_message, attachment_metas)
 
     def _looks_like_table_reformat_request(self, text: str) -> bool:
-        lowered = str(text or "").strip().lower()
-        if not lowered:
-            return False
-        if "table_extract" in lowered or "read_text_file" in lowered:
-            return False
-        has_table_ref = text_has_any(lowered, TABLE_REFERENCE_HINTS)
-        if not has_table_ref:
-            return False
-        if text_has_any(lowered, VERIFICATION_HINTS) or any(marker in lowered for marker in ("页码", "路径", "行号")):
-            return False
-        return text_has_any(lowered, TABLE_REFORMAT_HINTS)
+        return looks_like_table_reformat_request_helper(text)
 
     def _requires_evidence_mode(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        if not attachment_metas and self._looks_like_inline_document_payload(user_message):
-            return False
-        if attachment_metas and self._looks_like_holistic_document_explanation_request(user_message):
-            return False
-        if not attachment_metas and self._looks_like_table_reformat_request(text):
-            return False
-        if (
-            not attachment_metas
-            and self._looks_like_context_dependent_followup(user_message)
-            and any(
-                hint in text
-                for hint in (
-                    "翻译",
-                    "译成",
-                    "译为",
-                    "中文",
-                    "英文",
-                    "双语",
-                    "总结",
-                    "概括",
-                    "提炼",
-                    "整理",
-                    "改写",
-                    "润色",
-                    "translate",
-                )
-            )
-        ):
-            return False
-        if text_has_any(text, VERIFICATION_HINTS):
-            return True
-        if attachment_metas:
-            return text_has_any(text, SPEC_SCOPE_HINTS)
-        return False
+        return requires_evidence_mode_helper(self, user_message, attachment_metas)
 
     def _attachment_needs_tooling(self, meta: dict[str, Any]) -> bool:
-        suffix = str(meta.get("suffix") or "").strip().lower()
-        kind = str(meta.get("kind") or "").strip().lower()
-        try:
-            size = int(meta.get("size") or 0)
-        except Exception:
-            size = 0
-
-        if suffix in {".zip", ".msg"}:
-            return True
-        if kind == "document" and size > _ATTACHMENT_INLINE_MAX_BYTES:
-            return True
-        return False
+        return attachment_needs_tooling_helper(meta, _ATTACHMENT_INLINE_MAX_BYTES)
 
     def _attachment_needs_tooling_for_turn(self, meta: dict[str, Any], history_turn_count: int = 0) -> bool:
-        if self._attachment_needs_tooling(meta):
-            return True
-        if history_turn_count <= 0:
-            return False
-        kind = str(meta.get("kind") or "").strip().lower()
-        if kind != "document":
-            return False
-        try:
-            size = int(meta.get("size") or 0)
-        except Exception:
-            size = 0
-        path = str(meta.get("path") or "").strip()
-        if (not size) and path:
-            try:
-                size = Path(path).stat().st_size
-            except Exception:
-                size = 0
-        return size > _FOLLOWUP_INLINE_MAX_BYTES
+        return attachment_needs_tooling_for_turn_helper(
+            self,
+            meta,
+            history_turn_count=history_turn_count,
+            followup_inline_max_bytes=_FOLLOWUP_INLINE_MAX_BYTES,
+        )
 
     def _evidence_mode_needs_more_support(
         self,
@@ -9265,148 +8162,15 @@ class OfficeAgent:
         tool_events: list[ToolEvent],
         spec_lookup_request: bool = False,
     ) -> bool:
-        content = self._content_to_text(getattr(ai_msg, "content", "")).strip().lower()
-        if not content:
-            return True
-
-        tool_names = {tool.name for tool in tool_events}
-        evidence_tool_hits = tool_names & {
-            "search_text_in_file",
-            "multi_query_search",
-            "read_text_file",
-            "read_section_by_heading",
-            "table_extract",
-            "fact_check_file",
-            "search_codebase",
-        }
-        if spec_lookup_request and "search_text_in_file" not in tool_names:
-            return True
-        if not evidence_tool_hits:
-            return True
-        if spec_lookup_request and not (
-            {"read_text_file", "read_section_by_heading", "table_extract", "fact_check_file"} & tool_names
-        ):
-            return True
-
-        evidence_markers = (
-            "page",
-            "页",
-            "section",
-            "chapter",
-            "章节",
-            "命中",
-            "片段",
-            "line ",
-            "行 ",
-            "路径",
-            "according to",
-            "在当前提取文本中",
-        )
-        return not any(marker in content for marker in evidence_markers)
+        return evidence_mode_needs_more_support_helper(self, ai_msg, tool_events, spec_lookup_request)
 
     def _request_likely_requires_tools(self, user_message: str, attachment_metas: list[dict[str, Any]]) -> bool:
-        if any(self._attachment_needs_tooling(meta) for meta in attachment_metas):
-            return True
-        if any(
-            str(meta.get("kind") or "").strip().lower() == "document"
-            and not self._attachment_is_inline_parseable(meta)
-            for meta in attachment_metas
-        ):
-            return True
-        text = (user_message or "").strip().lower()
-        if not text:
-            return False
-        if not attachment_metas and self._looks_like_inline_document_payload(user_message):
-            return False
-        if "http://" in text or "https://" in text:
-            return True
-
-        direct_hints = (
-            "路径",
-            "目录",
-            "文件夹",
-            "测试",
-            "用例",
-            "测试文件",
-            "文件名",
-            "扩展名",
-            "函数",
-            "方法",
-            "代码",
-            "源码",
-            "代码库",
-            "仓库",
-            "repo",
-            "项目",
-            "实现",
-            "调用点",
-            "定义",
-            "声明",
-            "master",
-            "source",
-            "src",
-            "test",
-            "tests",
-            "case",
-            "在哪",
-            "搜索",
-            "上网",
-            "网上",
-            "查一下",
-            "搜一下",
-            "read_text_file",
-            "search_text_in_file",
-            "multi_query_search",
-            "read_section_by_heading",
-            "table_extract",
-            "fact_check_file",
-            "search_codebase",
-            "write_text_file",
-            "append_text_file",
-            "replace_in_file",
-            "写入",
-            "替换",
-            "更新",
-            "改成",
-            "改为",
-            "保存",
-            "落盘",
-            "apply",
-            "patch",
-            "write back",
-            "overwrite",
-            "replace",
-            "update",
-            "run_shell",
-            "search_web",
-            "fetch_web",
-            "download_web_file",
-            ".pdf",
-            ".doc",
-            ".docx",
-            ".ppt",
-            ".pptx",
-            ".xlsx",
-            ".csv",
-            ".zip",
-            ".msg",
-            "页码",
-            "定位",
-            "命中",
-            "查证",
-            "核对",
-            "according to",
-            "citation",
+        return request_likely_requires_tools_helper(
+            self,
+            user_message,
+            attachment_metas,
+            news_hints=_NEWS_HINTS,
         )
-        if any(hint in text for hint in direct_hints):
-            return True
-        if self._looks_like_write_or_edit_action(text):
-            return True
-        if self._has_file_like_lookup_token(text):
-            return True
-        if re.search(r"(?:^|[\s(])(?:/[^\s]+|[A-Za-z][:\\：][\\/][^\s]*)", text):
-            return True
-        return any(hint in text for hint in _NEWS_HINTS)
 
     def _looks_like_permission_gate_text(
         self,
@@ -9415,225 +8179,11 @@ class OfficeAgent:
         has_attachments: bool = False,
         request_requires_tools: bool = False,
     ) -> bool:
-        text = str(text or "").strip().lower()
-        if not text:
-            return False
-        if len(text) > 5000:
-            text = text[:5000]
-        attachment_deferral_patterns = (
-            "已完成解析",
-            "已经完成解析",
-            "已经完成了解析",
-            "已解析完成",
-            "已经解析完成",
-            "无需调用工具",
-            "无需再调用工具",
-            "无需再次调用工具",
-            "不需要调用工具",
-            "不必调用工具",
-            "already parsed",
-            "already finished parsing",
-            "no need to call tool",
-            "no need to use tool",
-            "no tools needed",
+        return looks_like_permission_gate_text_helper(
+            text,
+            has_attachments=has_attachments,
+            request_requires_tools=request_requires_tools,
         )
-        if has_attachments and any(p in text for p in attachment_deferral_patterns):
-            return True
-
-        general_gate_patterns = (
-            "要不要",
-            "是否继续",
-            "是否要我",
-            "是否直接搜索",
-            "是否直接查",
-            "直接搜索",
-            "直接查",
-            "先直接搜索",
-            "先直接查",
-            "能直接搜索吗",
-            "可以直接搜索吗",
-            "要不要直接搜索",
-            "要不要我直接搜索",
-            "你选",
-            "请选择",
-            "选一个",
-            "选一种",
-            "二选一",
-            "do you want me to continue",
-            "should i continue",
-            "if you agree",
-            "if agreed",
-            "如你同意",
-            "如果同意",
-            "若你同意",
-            "如果你同意",
-            "如您同意",
-            "若您同意",
-            "同意的话",
-            "同意继续",
-            "回复同意继续",
-            "回复“同意继续”",
-            "回复'同意继续'",
-            "授权继续",
-            "是否可直接访问",
-            "是否可以直接访问",
-            "是否能直接访问",
-            "可直接访问的目录",
-            "可访问的目录",
-            "是不是可访问",
-            "请确认我可以读取",
-            "请确认我能读取",
-            "请确认可以读取",
-            "请确认可读取",
-            "请确认我可以访问",
-            "请确认我可以查看",
-            "请确认可访问",
-            "请确认可以访问",
-            "可否读取",
-            "能否读取",
-            "读取下面两个路径",
-            "读取以下两个路径",
-            "读取下列路径",
-            "预览内容不完整",
-            "预览不完整",
-            "内容不完整（截断",
-            "内容不完整(截断",
-            "preview is incomplete",
-            "preview was truncated",
-            "content preview is truncated",
-            "please confirm i can read",
-            "can i read the following",
-            "need to read the full file",
-            "need to read the full document",
-            "is workbench directly accessible",
-            "is it directly accessible",
-            "请提供完整文件名",
-            "请给出完整文件名",
-            "请提供完整的文件名",
-            "请提供扩展名",
-            "请给出扩展名",
-            "需要扩展名",
-            "需要文件扩展名",
-            "需要完整文件名",
-            "带扩展名",
-            "完整文件名",
-            "完整的文件名",
-            "file extension",
-            "with extension",
-            "full filename",
-            "exact filename",
-            "请粘贴原文",
-            "请贴原文",
-            "请把原文贴",
-            "请提供原文",
-            "请先提供原文",
-            "请先提供原文片段",
-            "请先贴原文",
-            "请先把原文贴",
-            "请把代码贴出来",
-            "请贴出完整代码",
-            "请贴出原始代码",
-            "paste the original",
-            "paste the full code",
-            "provide the original text",
-        )
-        if not request_requires_tools and not has_attachments:
-            return any(p in text for p in general_gate_patterns)
-
-        patterns = (
-            *general_gate_patterns,
-            "两种方案",
-            "可行方案",
-            "方案a",
-            "方案b",
-            "工具未启用",
-            "还没有被激活",
-            "工具接口",
-            "无法触发",
-            "系统不执行写入",
-            "绝对路径",
-            "具体路径",
-            "完整路径",
-            "文件夹路径",
-            "请告诉我",
-            "你可以告诉我",
-            "继续读取吗",
-            "继续读吗",
-            "继续读取其他部分",
-            "继续查看其他部分",
-            "需要继续读取",
-            "需要继续读",
-            "需要读取其他部分",
-            "需要读其他部分",
-            "怕太大",
-            "太大",
-            "文件太大",
-            "内容太大",
-            "最终确认",
-            "确认句",
-            "无需你回答",
-            "不执行写入",
-            "触发工具调用",
-            "必须包含路径",
-            "需要你同意",
-            "需要你的同意",
-            "需要你回复同意继续",
-            "need your confirmation",
-            "do you want me to continue",
-            "should i continue",
-            "please provide instructions",
-            "你当前的指示中没有新增对读取附件内容的要求",
-            "没有新增对读取附件内容的要求",
-            "若后续需要解析",
-            "后续需要解析",
-            "无需调用工具",
-            "无需再调用工具",
-            "无需再次调用工具",
-            "不需要调用工具",
-            "已完成解析",
-            "已经完成了解析",
-            "已解析完成",
-            "write_text_file",
-            "append_text_file",
-            "directly search",
-            "search directly",
-            "absolute path",
-            "full path",
-            "full filename",
-            "exact filename",
-            "file extension",
-            "with extension",
-        )
-        if re.search(r"请确认.{0,24}(?:读取|访问|查看).{0,24}(?:路径|文件|附件)", text):
-            return True
-        if re.search(r"confirm.{0,30}(?:read|access|open).{0,30}(?:path|file|attachment)", text):
-            return True
-        if not any(p in text for p in patterns):
-            return False
-        # Heuristic: avoid over-triggering on normal questions by requiring mention of files/reading.
-        file_hints = (
-            "文件",
-            "读取",
-            "写入",
-            "生成",
-            "保存",
-            "read_text_file",
-            "write_text_file",
-            "append_text_file",
-            "chunk",
-            "附件",
-            "邮件",
-            "文档",
-            "path",
-            "扩展名",
-            "文件名",
-            "解析",
-            "搜索",
-            "函数",
-            "目录",
-            "文件夹",
-        )
-        return any(h in text for h in file_hints)
 
     def _looks_like_permission_gate(
         self,
