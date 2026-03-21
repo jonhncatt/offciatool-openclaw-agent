@@ -960,27 +960,33 @@ class KernelRuntime:
         self._write_json(self._last_shadow_run_path(), payload)
         return payload
 
-    def run_shadow_contracts(self) -> dict[str, object]:
+    def _run_manifest_contracts(
+        self,
+        *,
+        manifest: ActiveModuleManifest,
+        manifest_source: str,
+    ) -> dict[str, object]:
         from app.agent import OfficeAgent
         from app.models import ChatSettings
 
-        shadow_manifest = self.load_shadow_manifest()
-        probe = self.supervisor.probe_manifest_contracts(shadow_manifest)
+        probe = self.supervisor.probe_manifest_contracts(manifest)
         checks: list[dict[str, object]] = []
         capability_checks: list[dict[str, object]] = []
         payload: dict[str, object] = {
             "ok": bool(probe.get("ok")),
-            "shadow_manifest": shadow_manifest.to_dict(),
+            "manifest_source": manifest_source,
+            "manifest": manifest.to_dict(),
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "probe": probe,
             "checks": checks,
             "capability_checks": capability_checks,
         }
+        payload[f"{manifest_source}_manifest"] = manifest.to_dict()
         if not bool(probe.get("ok")):
             return payload
 
         run_id = self._pipeline_run_id()
-        run_dir = self.context.runtime_dir / "shadow_runs" / f"contracts-{run_id}"
+        run_dir = self.context.runtime_dir / "shadow_runs" / f"{manifest_source}-contracts-{run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
         contract_config = replace(
             self.supervisor._config,
@@ -990,8 +996,8 @@ class KernelRuntime:
             rollback_pointer_path=run_dir / "rollback_pointer.json",
             module_health_path=run_dir / "module_health.json",
         )
-        write_active_manifest(contract_config.active_manifest_path, shadow_manifest)
-        write_active_manifest(contract_config.shadow_manifest_path, shadow_manifest)
+        write_active_manifest(contract_config.active_manifest_path, manifest)
+        write_active_manifest(contract_config.shadow_manifest_path, manifest)
         contract_runtime = build_kernel_runtime(contract_config)
         contract_agent = OfficeAgent(contract_config, kernel_runtime=contract_runtime)
         settings = ChatSettings()
@@ -1164,6 +1170,18 @@ class KernelRuntime:
             and all(bool(item.get("ok")) for item in capability_checks)
         )
         return payload
+
+    def run_shadow_contracts(self) -> dict[str, object]:
+        return self._run_manifest_contracts(
+            manifest=self.load_shadow_manifest(),
+            manifest_source="shadow",
+        )
+
+    def run_active_contracts(self) -> dict[str, object]:
+        return self._run_manifest_contracts(
+            manifest=self.supervisor.load_active_manifest(),
+            manifest_source="active",
+        )
 
     def run_shadow_pipeline(
         self,

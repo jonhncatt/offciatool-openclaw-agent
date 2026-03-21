@@ -2274,6 +2274,30 @@
     }
   },
   {
+    "name": "helper_debug_kernel_active_contracts",
+    "kind": "helper",
+    "helper": "_debug_kernel_active_contracts",
+    "args": {},
+    "assert": {
+      "equals": {
+        "contracts.ok": true,
+        "contracts.manifest_source": "active"
+      },
+      "contains": {
+        "contracts.capability_checks.0.label": [
+          "router:web_news"
+        ],
+        "contracts.capability_checks.7.label": [
+          "tool_registry:describe"
+        ]
+      },
+      "min_value": {
+        "contracts.capability_checks.0.ok": 1,
+        "contracts.capability_checks.7.ok": 1
+      }
+    }
+  },
+  {
     "name": "helper_debug_kernel_shadow_replay",
     "kind": "helper",
     "helper": "_debug_kernel_shadow_replay",

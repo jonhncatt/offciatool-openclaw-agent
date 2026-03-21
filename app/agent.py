@@ -784,6 +784,21 @@ class OfficeAgent:
             contracts = runtime.run_shadow_contracts()
             return {"contracts": contracts}
 
+    def _debug_kernel_active_contracts(self) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="officetool-kernel-active-contracts-") as tmp_dir:
+            runtime_dir = Path(tmp_dir).resolve()
+            cfg = replace(
+                self.config,
+                runtime_dir=runtime_dir,
+                active_manifest_path=runtime_dir / "active_manifest.json",
+                shadow_manifest_path=runtime_dir / "shadow_manifest.json",
+                rollback_pointer_path=runtime_dir / "rollback_pointer.json",
+                module_health_path=runtime_dir / "module_health.json",
+            )
+            runtime = build_kernel_runtime(cfg)
+            contracts = runtime.run_active_contracts()
+            return {"contracts": contracts}
+
     def _debug_kernel_shadow_pipeline(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="officetool-kernel-shadow-pipeline-") as tmp_dir:
             runtime_dir = Path(tmp_dir).resolve()

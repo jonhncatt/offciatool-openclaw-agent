@@ -464,6 +464,19 @@ def kernel_shadow_contracts() -> KernelRuntimeResponse:
     )
 
 
+@app.post("/api/kernel/active/contracts", response_model=KernelRuntimeResponse)
+def kernel_active_contracts() -> KernelRuntimeResponse:
+    runtime = get_kernel_runtime()
+    contracts = runtime.run_active_contracts()
+    validation = runtime.validate_active_manifest()
+    return _kernel_runtime_response(
+        ok=bool(contracts.get("ok")),
+        detail="active contracts 已执行。",
+        validation=validation,
+        contracts=contracts,
+    )
+
+
 @app.post("/api/kernel/shadow/smoke", response_model=KernelRuntimeResponse)
 def kernel_shadow_smoke(req: KernelShadowSmokeRequest) -> KernelRuntimeResponse:
     runtime = get_kernel_runtime()
