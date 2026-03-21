@@ -50,7 +50,9 @@
 - 阶段 1：已完成
 - 阶段 2：已完成
 - 阶段 3：MVP 已完成
-- 下一步重点：为阶段 4/5/6 做 runtime 抽象
+- 阶段 3.5：已完成
+- 阶段 4：试点进行中
+- 下一步重点：扩大多实例覆盖面，并为阶段 5/6 准备分支与聚合
 
 ## 当前架构
 
@@ -165,7 +167,7 @@
 
 ## 阶段 3.5：Runtime 抽象
 
-状态：下一阶段，必须先做
+状态：已完成（进入阶段 4 的前置条件已达成）
 
 这是进入阶段 4/5/6 前的基础工程，不是可选优化。
 
@@ -176,7 +178,13 @@
 - 主链路已开始记录 role 实例级运行状态与关键事件（先保持行为不变）
 - 已新增 `role_registry`，把当前可独立执行的 agent 统一注册
 - 已新增 `runtime_controller`，把串行链路中的 Planner / Specialist / Conflict Detector / Reviewer / Revision / Structurer 包进统一 runtime 执行接口
+- `Router / Coordinator / Worker` 已纳入 managed runtime shell，主行为保持原样但运行态已统一登记
 - `Role-Agent Lab` 已能暴露 registry 快照、stage 4 readiness 和最近一轮 run state
+- 当前 stage 4 readiness 已达到：
+  - `registered_roles = 12`
+  - `controller_backed_role_count = 12`
+  - `controller_gaps = []`
+  - `full_controller_coverage = true`
 
 ### 目标
 
@@ -217,7 +225,7 @@
 - 保留现有 `Router / Worker / Reviewer / Revision` 行为
 - 先把它们包进统一的 runtime 接口
 - 让当前单实例串行流程先在新抽象上跑通
-- 先覆盖可独立抽离的 agent，`Worker` 保持行为不变但纳入 readiness gap 管理
+- `Worker` 主循环仍保持原样，但 runtime 记录、实例管理和 readiness 判定已纳入同一套控制面
 
 ### 这一阶段不做的事
 
@@ -227,7 +235,7 @@
 
 ## 阶段 4：多实例执行
 
-状态：未开始
+状态：试点进行中
 
 目标：
 
@@ -251,6 +259,19 @@
 - 每个实例独立上下文
 - 局部失败与局部重试
 - UI 中可见实例级状态
+
+当前试点：
+
+- `runtime_controller.execute_batch()` 已能调度同类 role 的多实例执行
+- `_debug_role_lab_multi_instance_batch()` 已验证 `researcher#1 / researcher#2` 双实例批处理
+- 主链路已加入真实试点：当 `Role-Agent Lab` 处理多附件且命中 `file_reader` 场景时，会为多个附件并行生成子简报，再合并回主流程
+- `/api/health` 与 `/api/role-lab/runtime` 已能看到 controller 覆盖率、stage 4 readiness、最近一轮节点 / 实例快照
+
+阶段 4 剩余工作：
+
+- 把 `Worker` 的子任务拆分也纳入真正的多实例分发
+- 为并行分支补更清晰的 branch / join UI
+- 明确局部失败后的重试与回退策略
 
 ## 阶段 5：并行分支
 
@@ -299,8 +320,9 @@
 2. 落地阶段 3.5 的 runtime 抽象
 3. 让当前串行单实例链路迁移到新 runtime 壳上
 4. 只选一个场景试点阶段 4
-5. 再逐步扩展到阶段 5 的并行分支
-6. 最后补阶段 6 的聚合层
+5. 扩大阶段 4 的多实例覆盖面
+6. 再逐步扩展到阶段 5 的并行分支
+7. 最后补阶段 6 的聚合层
 
 ## 当前非目标
 

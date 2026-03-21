@@ -23,6 +23,7 @@ class RegisteredRole:
     description: str = ""
     handler: RoleHandler | None = None
     executable: bool = True
+    controller_backed: bool = True
     multi_instance_ready: bool = False
     supports_parent_child: bool = False
     runtime_profiles: tuple[str, ...] = ()
@@ -57,6 +58,7 @@ class RoleRegistry:
         roles = self.roles()
         kind_counts = {"agent": 0, "processor": 0, "hybrid": 0}
         executable_roles: list[str] = []
+        controller_backed_roles: list[str] = []
         multi_instance_roles: list[str] = []
         parent_child_roles: list[str] = []
         controller_gaps: list[str] = []
@@ -68,6 +70,8 @@ class RoleRegistry:
             kind_counts[kind] += 1
             if item.executable and item.handler is not None:
                 executable_roles.append(item.role)
+            if item.controller_backed:
+                controller_backed_roles.append(item.role)
             else:
                 controller_gaps.append(item.role)
             if item.multi_instance_ready:
@@ -81,6 +85,7 @@ class RoleRegistry:
                     "kind": kind,
                     "description": item.description,
                     "executable": item.executable and item.handler is not None,
+                    "controller_backed": item.controller_backed,
                     "multi_instance_ready": item.multi_instance_ready,
                     "supports_parent_child": item.supports_parent_child,
                     "runtime_profiles": list(item.runtime_profiles),
@@ -90,6 +95,7 @@ class RoleRegistry:
             "registered_roles": len(roles),
             "kind_counts": kind_counts,
             "executable_roles": executable_roles,
+            "controller_backed_roles": controller_backed_roles,
             "multi_instance_ready_roles": multi_instance_roles,
             "parent_child_ready_roles": parent_child_roles,
             "controller_gaps": controller_gaps,
@@ -107,6 +113,7 @@ def build_default_role_registry() -> RoleRegistry:
         description: str,
         handler: RoleHandler | None,
         executable: bool,
+        controller_backed: bool,
         multi_instance_ready: bool,
         supports_parent_child: bool,
         runtime_profiles: tuple[str, ...] = (),
@@ -119,6 +126,7 @@ def build_default_role_registry() -> RoleRegistry:
                 description=description,
                 handler=handler,
                 executable=executable,
+                controller_backed=controller_backed,
                 multi_instance_ready=multi_instance_ready,
                 supports_parent_child=supports_parent_child,
                 runtime_profiles=runtime_profiles,
@@ -131,6 +139,7 @@ def build_default_role_registry() -> RoleRegistry:
         description="规则与可选 LLM 路由入口。",
         handler=None,
         executable=False,
+        controller_backed=True,
         multi_instance_ready=False,
         supports_parent_child=False,
     )
@@ -140,6 +149,7 @@ def build_default_role_registry() -> RoleRegistry:
         description="运行时状态机与调度处理器。",
         handler=None,
         executable=False,
+        controller_backed=True,
         multi_instance_ready=False,
         supports_parent_child=True,
     )
@@ -149,7 +159,8 @@ def build_default_role_registry() -> RoleRegistry:
         description="主任务执行与工具循环。",
         handler=None,
         executable=False,
-        multi_instance_ready=False,
+        controller_backed=True,
+        multi_instance_ready=True,
         supports_parent_child=True,
         runtime_profiles=("explainer", "evidence", "patch_worker"),
     )
@@ -159,6 +170,7 @@ def build_default_role_registry() -> RoleRegistry:
         description="提炼目标、限制与执行计划。",
         handler=run_planner_role,
         executable=True,
+        controller_backed=True,
         multi_instance_ready=True,
         supports_parent_child=True,
         runtime_profiles=("explainer", "evidence", "patch_worker"),
@@ -170,6 +182,7 @@ def build_default_role_registry() -> RoleRegistry:
             description=f"{title} 专门简报角色。",
             handler=run_specialist_with_context,
             executable=True,
+            controller_backed=True,
             multi_instance_ready=True,
             supports_parent_child=True,
             runtime_profiles=("explainer", "evidence", "patch_worker"),
@@ -180,6 +193,7 @@ def build_default_role_registry() -> RoleRegistry:
         description="通识与工程知识冲突报警。",
         handler=run_conflict_detector_role,
         executable=True,
+        controller_backed=True,
         multi_instance_ready=True,
         supports_parent_child=True,
         runtime_profiles=("evidence",),
@@ -190,6 +204,7 @@ def build_default_role_registry() -> RoleRegistry:
         description="覆盖度、证据链和交付风险审阅。",
         handler=run_reviewer_role,
         executable=True,
+        controller_backed=True,
         multi_instance_ready=True,
         supports_parent_child=True,
         runtime_profiles=("evidence",),
@@ -200,6 +215,7 @@ def build_default_role_registry() -> RoleRegistry:
         description="按审阅结论修订答复。",
         handler=run_revision_role,
         executable=True,
+        controller_backed=True,
         multi_instance_ready=True,
         supports_parent_child=True,
         runtime_profiles=("explainer", "evidence"),
@@ -210,6 +226,7 @@ def build_default_role_registry() -> RoleRegistry:
         description="整理结构化证据包与 assertions。",
         handler=run_structurer_role,
         executable=True,
+        controller_backed=True,
         multi_instance_ready=True,
         supports_parent_child=True,
         runtime_profiles=("evidence",),

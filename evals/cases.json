@@ -2781,13 +2781,10 @@
     "args": {},
     "assert": {
       "equals": {
-        "registry.registered_roles": 12
-      },
-      "contains_any": {
-        "stage4_readiness.next_focus": [
-          "worker runtime abstraction",
-          "pilot multi-instance batch"
-        ]
+        "registry.registered_roles": 12,
+        "stage4_readiness.controller_backed_role_count": 12,
+        "stage4_readiness.full_controller_coverage": true,
+        "stage4_readiness.next_focus": "pilot multi-instance batch"
       },
       "min_value": {
         "stage4_readiness.executable_role_count": 8,

@@ -603,6 +603,7 @@ class OfficeAgent:
         self.tools = LocalToolExecutor(config)
         self._auth_manager = OpenAIAuthManager(config)
         self._kernel_runtime = kernel_runtime or build_kernel_runtime(config)
+        self._product_profile_key = str(os.environ.get("OFFICETOOL_APP_PROFILE") or "").strip().lower() or "kernel_robot"
 
         try:
             from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -783,6 +784,8 @@ class OfficeAgent:
                 meta={"profile": "role_agent_lab"},
             )
             parent_node = run_state.root_node_id
+            contexts: list[RoleContext] = []
+            metas: list[dict[str, Any]] = []
             for slot in ("A", "B"):
                 context = self._make_role_context(
                     "researcher",
@@ -798,15 +801,18 @@ class OfficeAgent:
                     },
                     extra={"slot": slot},
                 )
-                self._role_runtime_controller.execute(
-                    agent=self,
-                    role="researcher",
-                    context=context,
-                    run_state=run_state,
-                    parent_node_id=parent_node,
-                    phase="multi_instance_demo",
-                    meta={"slot": slot},
-                )
+                contexts.append(context)
+                metas.append({"slot": slot})
+            self._role_runtime_controller.execute_batch(
+                agent=self,
+                role="researcher",
+                contexts=contexts,
+                run_state=run_state,
+                parent_node_id=parent_node,
+                phase="multi_instance_demo",
+                metas=metas,
+                max_workers=2,
+            )
             run_state.finish(status="completed")
             snapshot = self._role_runtime_controller.capture_run_state(run_state)
             return {
@@ -819,6 +825,94 @@ class OfficeAgent:
             }
         finally:
             registry_role.handler = original_handler
+
+    def _should_role_lab_parallelize_specialist(
+        self,
+        specialist: str,
+        *,
+        route: dict[str, Any],
+        attachment_metas: list[dict[str, Any]],
+    ) -> bool:
+        if self._product_profile_key != "role_agent_lab":
+            return False
+        if str(specialist or "").strip().lower() != "file_reader":
+            return False
+        if len(attachment_metas) < 2:
+            return False
+        task_type = str(route.get("task_type") or "").strip().lower()
+        return task_type in {"attachment_tooling", "evidence_lookup", "simple_understanding"}
+
+    def _merge_specialist_batch_results(
+        self,
+        *,
+        specialist: str,
+        contexts: list[RoleContext],
+        results: list[RoleResult],
+    ) -> RoleResult:
+        if not results:
+            fallback = self._specialist_fallback(
+                specialist=specialist,
+                requested_model=self.config.default_model,
+                attachment_metas=[],
+                initial_triage_request=False,
+            )
+            return self._make_default_role_result(
+                specialist,
+                payload=fallback,
+                requested_model=self.config.default_model,
+                user_message="",
+                description="batched specialist fallback",
+                output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+                raw_text="{}",
+            )
+        base_context = contexts[0]
+        attachment_names = [
+            str(((ctx.attachment_metas or [{}])[0] or {}).get("original_name") or ((ctx.attachment_metas or [{}])[0] or {}).get("name") or f"attachment-{idx+1}")
+            for idx, ctx in enumerate(contexts)
+        ]
+        bullets: list[str] = []
+        worker_hints: list[str] = []
+        queries: list[str] = []
+        stop_rules: list[str] = []
+        notes: list[str] = []
+        usage = self._empty_usage()
+        effective_model = ""
+        for idx, result in enumerate(results):
+            name = attachment_names[idx] if idx < len(attachment_names) else f"attachment-{idx+1}"
+            summary = str(result.payload.get("summary") or result.summary or "").strip()
+            if summary:
+                bullets.append(f"{name}: {summary}")
+            bullets.extend(
+                [f"{name}: {item}" for item in self._normalize_string_list(result.payload.get("bullets") or [], limit=3, item_limit=160)]
+            )
+            worker_hint = str(result.payload.get("worker_hint") or "").strip()
+            if worker_hint:
+                worker_hints.append(f"{name}: {worker_hint}")
+            queries.extend(self._normalize_string_list(result.payload.get("queries") or [], limit=3, item_limit=80))
+            stop_rules.extend(self._normalize_string_list(result.payload.get("stop_rules") or [], limit=3, item_limit=120))
+            notes.extend(list(result.notes or []))
+            usage = self._merge_usage(usage, result.usage or self._empty_usage())
+            if not effective_model:
+                effective_model = str(result.effective_model or "").strip()
+        payload = {
+            "role": specialist,
+            "summary": f"{_SPECIALIST_LABELS.get(specialist, specialist)} 已为 {len(results)} 个附件生成并行子简报。",
+            "bullets": self._normalize_string_list(bullets, limit=8, item_limit=180),
+            "worker_hint": "；".join(self._normalize_string_list(worker_hints, limit=4, item_limit=220)),
+            "queries": self._normalize_string_list(queries, limit=6, item_limit=80),
+            "scope": f"batched_{specialist}_parallel_read",
+            "stop_rules": self._normalize_string_list(stop_rules, limit=4, item_limit=120),
+            "usage": usage,
+            "effective_model": effective_model or base_context.requested_model,
+            "notes": notes,
+        }
+        raw_text = json.dumps([item.payload for item in results], ensure_ascii=False)
+        spec = self._make_role_spec(
+            specialist,
+            description=f"{_SPECIALIST_LABELS.get(specialist, specialist)} 并行子任务聚合结果。",
+            output_keys=["summary", "bullets", "worker_hint", "queries", "scope", "stop_rules"],
+        )
+        return self._make_role_result(spec, base_context, payload, raw_text)
 
     def _debug_kernel_shadow_upgrade_flow(self, target_router_ref: str = "router_rules@2.0.0") -> dict[str, Any]:
         return debug_kernel_shadow_upgrade_flow_helper(self, target_router_ref)
@@ -1093,8 +1187,7 @@ class OfficeAgent:
         usage_total = self._empty_usage()
         run_state: RunState | None = None
         route: dict[str, Any] = {}
-        role_node_seq: dict[str, int] = {}
-        role_instance_seq: dict[str, int] = {}
+        managed_role_executions: dict[str, RoleExecution] = {}
         coordinator_node_id = ""
         coordinator_instance_id = ""
         allowed_roots_text = ", ".join(str(p) for p in self.config.allowed_roots)
@@ -1280,40 +1373,45 @@ class OfficeAgent:
             role_key = str(role or "").strip().lower()
             if not role_key:
                 return "", ""
-            role_node_seq[role_key] = role_node_seq.get(role_key, 0) + 1
-            role_instance_seq[role_key] = role_instance_seq.get(role_key, 0) + 1
-            node_id = f"{role_key}:{role_node_seq[role_key]}"
-            parent_id = parent_node_id or run_state.root_node_id
-            run_state.add_node(
-                node_id=node_id,
+            execution = self._role_runtime_controller.begin_managed(
                 role=role_key,
-                role_kind=str(_ROLE_KINDS.get(role_key, "agent")),  # type: ignore[arg-type]
-                parent_node_id=parent_id,
+                run_state=run_state,
+                parent_node_id=parent_node_id,
                 phase=phase,
-                meta=meta or {},
-            )
-            instance_id = f"{role_key}#{role_instance_seq[role_key]}"
-            run_state.start_instance(
-                instance_id=instance_id,
-                role=role_key,
-                node_id=node_id,
-                sequence=role_instance_seq[role_key],
                 tool_mode=tool_mode,
-                meta=meta or {},
+                meta=meta,
             )
-            return node_id, instance_id
+            if execution.instance_id:
+                managed_role_executions[execution.instance_id] = execution
+            return execution.node_id, execution.instance_id
 
         def complete_role_instance(instance_id: str, *, summary_text: str = "") -> None:
             nonlocal run_state
             if run_state is None or not instance_id:
                 return
-            run_state.complete_instance(instance_id, summary=summary_text)
+            execution = managed_role_executions.get(instance_id)
+            if execution is None:
+                run_state.complete_instance(instance_id, summary=summary_text)
+                return
+            self._role_runtime_controller.complete_managed(
+                execution,
+                run_state=run_state,
+                summary=summary_text,
+            )
 
         def fail_role_instance(instance_id: str, *, error_text: str = "") -> None:
             nonlocal run_state
             if run_state is None or not instance_id:
                 return
-            run_state.fail_instance(instance_id, error=error_text)
+            execution = managed_role_executions.get(instance_id)
+            if execution is None:
+                run_state.fail_instance(instance_id, error=error_text)
+                return
+            self._role_runtime_controller.fail_managed(
+                execution,
+                run_state=run_state,
+                error=error_text,
+            )
 
         def add_run_event(kind: str, **payload: Any) -> None:
             nonlocal run_state
@@ -1824,15 +1922,68 @@ class OfficeAgent:
                 route=route,
                 user_content=user_content,
             )
-            specialist_execution = self._execute_registered_role(
-                role=specialist,
-                context=specialist_context,
-                run_state=run_state,
-                parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
-                phase="specialist_brief",
-                meta={"specialist": specialist},
-            )
-            specialist_result = specialist_execution.result or self._run_specialist_with_context(context=specialist_context)
+            if self._should_role_lab_parallelize_specialist(
+                specialist,
+                route=route,
+                attachment_metas=attachment_metas,
+            ) and run_state is not None:
+                batch_contexts: list[RoleContext] = []
+                batch_metas: list[dict[str, Any]] = []
+                for attachment_index, attachment_meta in enumerate(attachment_metas[:4], start=1):
+                    batch_contexts.append(
+                        self._make_role_context(
+                            specialist,
+                            requested_model=requested_model,
+                            user_message=user_message,
+                            effective_user_message=planner_user_message,
+                            history_summary=summary,
+                            attachment_metas=[attachment_meta],
+                            route=route,
+                            user_content=user_content,
+                            extra={"batch_slot": attachment_index},
+                        )
+                    )
+                    batch_metas.append(
+                        {
+                            "specialist": specialist,
+                            "attachment_id": str(attachment_meta.get("id") or ""),
+                            "attachment_name": str(attachment_meta.get("original_name") or attachment_meta.get("name") or ""),
+                            "batch_slot": attachment_index,
+                        }
+                    )
+                specialist_executions = self._role_runtime_controller.execute_batch(
+                    agent=self,
+                    role=specialist,
+                    contexts=batch_contexts,
+                    run_state=run_state,
+                    parent_node_id=coordinator_node_id or run_state.root_node_id,
+                    phase="specialist_parallel_brief",
+                    metas=batch_metas,
+                    max_workers=min(4, len(batch_contexts)),
+                )
+                specialist_results = [execution.result for execution in specialist_executions if execution.result is not None]
+                specialist_result = self._merge_specialist_batch_results(
+                    specialist=specialist,
+                    contexts=batch_contexts,
+                    results=specialist_results,
+                )
+                specialist_node_id = ",".join(
+                    [execution.node_id for execution in specialist_executions if execution.node_id]
+                )
+                add_trace(
+                    f"Stage 4 试点: {specialist_label} 已为 {len(specialist_results)} 个附件并行生成子简报。"
+                )
+            else:
+                specialist_execution = self._execute_registered_role(
+                    role=specialist,
+                    context=specialist_context,
+                    run_state=run_state,
+                    parent_node_id=coordinator_node_id or run_state.root_node_id if run_state else None,
+                    phase="specialist_brief",
+                    meta={"specialist": specialist},
+                )
+                specialist_result = specialist_execution.result or self._run_specialist_with_context(context=specialist_context)
+                specialist_node_id = specialist_execution.node_id
             specialist_brief = specialist_result.payload
             specialist_raw = specialist_result.raw_text
             specialist_model = str(specialist_result.effective_model or "").strip()
@@ -1843,7 +1994,7 @@ class OfficeAgent:
             add_run_event(
                 "specialist_completed",
                 role=specialist,
-                node_id=specialist_execution.node_id,
+                node_id=specialist_node_id,
                 model=specialist_model or self.config.summary_model or requested_model,
                 bullet_count=len(specialist_result.payload.get("bullets") or []),
             )

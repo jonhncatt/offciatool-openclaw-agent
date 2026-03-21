@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from typing import Any
 
 from app.role_runtime import RoleContext, RoleResult, RunState
@@ -21,6 +23,7 @@ class RoleRuntimeController:
     def __init__(self, registry: RoleRegistry) -> None:
         self.registry = registry
         self._last_run_snapshot: dict[str, Any] = {}
+        self._state_lock = threading.Lock()
 
     def _next_node_id(self, run_state: RunState, role: str) -> str:
         seq = sum(1 for node in run_state.nodes.values() if node.role == role and node.node_id != run_state.root_node_id) + 1
@@ -57,6 +60,90 @@ class RoleRuntimeController:
         if run_state is not None:
             node_id = self._next_node_id(run_state, role)
             parent_id = parent_node_id or run_state.root_node_id
+            with self._state_lock:
+                run_state.add_node(
+                    node_id=node_id,
+                    role=role,
+                    role_kind=str(registered.kind or "agent"),  # type: ignore[arg-type]
+                    parent_node_id=parent_id,
+                    phase=phase,
+                    meta=merged_meta,
+                )
+                instance_id, sequence = self._next_instance_id(run_state, role)
+                run_state.start_instance(
+                    instance_id=instance_id,
+                    role=role,
+                    node_id=node_id,
+                    sequence=sequence,
+                    tool_mode=tool_mode,
+                    meta=merged_meta,
+                )
+                run_state.add_event(
+                    "role_dispatch",
+                    role=role,
+                    node_id=node_id,
+                    instance_id=instance_id,
+                    phase=phase,
+                    parent_node_id=parent_id,
+                )
+
+        try:
+            result = registered.handler(agent, context=context, **dict(handler_kwargs or {}))
+            summary = str(
+                result.summary
+                or result.payload.get("summary")
+                or result.payload.get("objective")
+                or f"{role}_completed"
+            ).strip()
+            if run_state is not None and instance_id:
+                with self._state_lock:
+                    run_state.complete_instance(instance_id, summary=summary)
+                    run_state.add_event(
+                        "role_completed",
+                        role=role,
+                        node_id=node_id,
+                        instance_id=instance_id,
+                        summary=summary,
+                        output_keys=list(result.payload.keys())[:10],
+                    )
+                    self.capture_run_state(run_state)
+            return RoleExecution(role=role, node_id=node_id, instance_id=instance_id, result=result)
+        except Exception as exc:
+            if run_state is not None and instance_id:
+                with self._state_lock:
+                    run_state.fail_instance(instance_id, error=str(exc))
+                    run_state.add_event(
+                        "role_failed",
+                        role=role,
+                        node_id=node_id,
+                        instance_id=instance_id,
+                        error=str(exc),
+                    )
+                    self.capture_run_state(run_state)
+            raise
+
+    def begin_managed(
+        self,
+        *,
+        role: str,
+        run_state: RunState,
+        parent_node_id: str | None = None,
+        phase: str = "",
+        tool_mode: str = "",
+        meta: dict[str, Any] | None = None,
+    ) -> RoleExecution:
+        registered = self.registry.require(role)
+        if not registered.controller_backed:
+            raise RuntimeError(f"role {role} is not controller-backed")
+        node_id = self._next_node_id(run_state, role)
+        parent_id = parent_node_id or run_state.root_node_id
+        merged_meta = {
+            "role_title": registered.title,
+            "runtime_profiles": list(registered.runtime_profiles),
+            "execution_mode": "managed",
+            **dict(meta or {}),
+        }
+        with self._state_lock:
             run_state.add_node(
                 node_id=node_id,
                 role=role,
@@ -81,40 +168,99 @@ class RoleRuntimeController:
                 instance_id=instance_id,
                 phase=phase,
                 parent_node_id=parent_id,
+                execution_mode="managed",
             )
+            self.capture_run_state(run_state)
+        return RoleExecution(role=role, node_id=node_id, instance_id=instance_id)
 
-        try:
-            result = registered.handler(agent, context=context, **dict(handler_kwargs or {}))
-            summary = str(
-                result.summary
-                or result.payload.get("summary")
-                or result.payload.get("objective")
-                or f"{role}_completed"
-            ).strip()
-            if run_state is not None and instance_id:
-                run_state.complete_instance(instance_id, summary=summary)
-                run_state.add_event(
-                    "role_completed",
-                    role=role,
-                    node_id=node_id,
-                    instance_id=instance_id,
-                    summary=summary,
-                    output_keys=list(result.payload.keys())[:10],
-                )
-                self.capture_run_state(run_state)
-            return RoleExecution(role=role, node_id=node_id, instance_id=instance_id, result=result)
-        except Exception as exc:
-            if run_state is not None and instance_id:
-                run_state.fail_instance(instance_id, error=str(exc))
-                run_state.add_event(
-                    "role_failed",
-                    role=role,
-                    node_id=node_id,
-                    instance_id=instance_id,
-                    error=str(exc),
-                )
-                self.capture_run_state(run_state)
-            raise
+    def complete_managed(
+        self,
+        execution: RoleExecution,
+        *,
+        run_state: RunState,
+        summary: str = "",
+        payload_meta: dict[str, Any] | None = None,
+    ) -> None:
+        if not execution.instance_id:
+            return
+        with self._state_lock:
+            run_state.complete_instance(execution.instance_id, summary=summary)
+            run_state.add_event(
+                "role_completed",
+                role=execution.role,
+                node_id=execution.node_id,
+                instance_id=execution.instance_id,
+                summary=summary,
+                **dict(payload_meta or {}),
+            )
+            self.capture_run_state(run_state)
+
+    def fail_managed(
+        self,
+        execution: RoleExecution,
+        *,
+        run_state: RunState,
+        error: str,
+    ) -> None:
+        if not execution.instance_id:
+            return
+        with self._state_lock:
+            run_state.fail_instance(execution.instance_id, error=error)
+            run_state.add_event(
+                "role_failed",
+                role=execution.role,
+                node_id=execution.node_id,
+                instance_id=execution.instance_id,
+                error=error,
+            )
+            self.capture_run_state(run_state)
+
+    def execute_batch(
+        self,
+        *,
+        agent: Any,
+        role: str,
+        contexts: list[RoleContext],
+        run_state: RunState,
+        parent_node_id: str | None = None,
+        phase: str = "",
+        tool_mode: str = "",
+        metas: list[dict[str, Any]] | None = None,
+        max_workers: int = 4,
+        handler_kwargs_list: list[dict[str, Any] | None] | None = None,
+    ) -> list[RoleExecution]:
+        if not contexts:
+            return []
+        jobs: list[tuple[int, RoleContext, dict[str, Any] | None, dict[str, Any] | None]] = []
+        for idx, context in enumerate(contexts):
+            job_meta = (metas[idx] if metas and idx < len(metas) else None) or {}
+            job_kwargs = (handler_kwargs_list[idx] if handler_kwargs_list and idx < len(handler_kwargs_list) else None) or {}
+            jobs.append((idx, context, job_meta, job_kwargs))
+
+        results: list[RoleExecution] = [RoleExecution(role=role) for _ in jobs]
+
+        def _run(job: tuple[int, RoleContext, dict[str, Any] | None, dict[str, Any] | None]) -> tuple[int, RoleExecution]:
+            idx, context, job_meta, job_kwargs = job
+            execution = self.execute(
+                agent=agent,
+                role=role,
+                context=context,
+                run_state=run_state,
+                parent_node_id=parent_node_id,
+                phase=phase,
+                tool_mode=tool_mode,
+                meta=job_meta,
+                handler_kwargs=job_kwargs,
+            )
+            return idx, execution
+
+        with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(jobs)))) as pool:
+            futures = [pool.submit(_run, job) for job in jobs]
+            for future in as_completed(futures):
+                idx, execution = future.result()
+                results[idx] = execution
+        self.capture_run_state(run_state)
+        return results
 
     def capture_run_state(
         self,
@@ -163,6 +309,7 @@ class RoleRuntimeController:
     def stage4_readiness(self) -> dict[str, Any]:
         registry_snapshot = self.registry.snapshot()
         executable_roles = list(registry_snapshot.get("executable_roles") or [])
+        controller_backed_roles = list(registry_snapshot.get("controller_backed_roles") or [])
         multi_instance_roles = list(registry_snapshot.get("multi_instance_ready_roles") or [])
         parent_child_roles = list(registry_snapshot.get("parent_child_ready_roles") or [])
         controller_gaps = list(registry_snapshot.get("controller_gaps") or [])
@@ -172,6 +319,7 @@ class RoleRuntimeController:
             "ready_for_stage4_trial": ready_for_trial,
             "full_controller_coverage": full_controller_coverage,
             "executable_role_count": len(executable_roles),
+            "controller_backed_role_count": len(controller_backed_roles),
             "multi_instance_role_count": len(multi_instance_roles),
             "parent_child_role_count": len(parent_child_roles),
             "controller_gaps": controller_gaps,
